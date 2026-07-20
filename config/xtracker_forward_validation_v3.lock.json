@@ -1,0 +1,34 @@
+{
+  "activation_utc": "2026-07-20T15:38:51.823Z",
+  "amendment_rule": "substantive change requires v4 and a new forward start; this lock is never overwritten",
+  "candidate_parameters": {
+    "early_drawdown_exit_ratio": 0.75,
+    "entry_limit_max_vwap_and_marginal": 0.25,
+    "event_risk_cap_usd_including_fee_and_one_tick_buffer": 10.0
+  },
+  "fixed_end": {
+    "calendar_days": 180,
+    "completed_independent_clusters": 100,
+    "whichever_first": true
+  },
+  "forward_capture_sha256": "61bed6d639c43f58cc5d260e5aa2ba4e90cb42452d5d7cce8579bf697e508add",
+  "frozen_decision_rule_hashes": {
+    "/data/workspace/polymarket-research/xtracker_paper_rebalance_ledger.py": "3550584f16a10dd27b5066f5bea3a79963673c9099ec92f92aa979b04b1fd227",
+    "/data/workspace/polymarket-research/xtracker_tweet_depth_check.py": "987c114c8450e44b9fd20bff2f6966d6b8e72615181b1ec505b7115c48b02f2b",
+    "/data/workspace/polymarket-research/xtracker_tweet_watchdog.py": "24635ed1cd97cae42a97cb5239a2e205182c6078e96122f243048e2761a1578a"
+  },
+  "frozen_strategy_dir": "/data/workspace/polymarket-research/reports/xtracker_strategy_freeze/xtracker_frozen_20260720T151927Z",
+  "frozen_strategy_manifest_sha256": "4935ef0f710cf33d0217ae7d103015224d8cfd34b70624bce3d7512237c0887f",
+  "historical_rows_count": false,
+  "instrumented_depth_collector_sha256": "318075e9abbf79ecac854d16aa841e3f632f17e7485c0390cdf3f371e50ffa22",
+  "live_orders_allowed": false,
+  "lock_sha256": "c8344e162722cf1341478f631d402e1c655c1a01af18b3e100a4e02705357b3b",
+  "minimum_executable_net_capturable_clusters_per_arm": 30,
+  "paper_only": true,
+  "protocol_id": "xtracker_forward_v3_20260720",
+  "protocol_path": "/data/workspace/polymarket-research/config/xtracker_forward_validation_v3.json",
+  "protocol_sha256": "8b09cb6fa53ef906dbf5c5c20159b18f594b271954f636c49556ab3d7063345f",
+  "schema_version": "xtracker_forward_validation_lock_v1",
+  "sequential_wrapper_sha256": "0e716da117209a6fc5a4a484e783578c37f6618c8e3096846628db98549692d1",
+  "wallet_or_authentication_allowed": false
+}

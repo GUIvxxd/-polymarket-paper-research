@@ -1,0 +1,126 @@
+{
+  "schema_version": "xtracker_forward_validation_protocol_v2",
+  "protocol_id": "xtracker_forward_v2_20260720",
+  "status": "DRAFT_BLOCKED_DO_NOT_COUNT_OBSERVATIONS",
+  "paper_only": true,
+  "wallet_or_authentication_allowed": false,
+  "live_orders_allowed": false,
+  "historical_sample_use": "diagnostic_only; never estimate or select candidate parameters; never promote a rule from the historical sample",
+  "activation": {
+    "forward_start": "UNSET_UNTIL_PROTOCOL_AND_BASELINE_ARE_HASHED",
+    "observations_before_forward_start_count": false,
+    "fixed_end_rule": "first of 100 registered independent clusters or 180 calendar days after forward_start",
+    "minimum_clusters_for_any_conclusion": 30,
+    "analysis_times": ["fixed_end_only"],
+    "interim_peeking": "operational completeness and safety only; no PnL comparison, parameter change, early promotion, or optional stopping"
+  },
+  "baseline": {
+    "name": "UNRESOLVED_CURRENT_X_BASELINE",
+    "status": "BLOCKED_BY_ENTRY_RULE_MISMATCH",
+    "mismatch": "xtracker_tweet_watchdog.py uses consensus_v3_2026_07_16 while xtracker_paper_rebalance_ledger.py reselects entries with tightened_v2_2026_07_15 instead of replaying stored watchdog_actionable decisions",
+    "required_freeze_scope": [
+      "complete source and dependency tree",
+      "machine-executable entry, rebalance, exit, sizing, monitoring-cadence, fee, latency, and settlement rules",
+      "configuration and event-universe discovery rule",
+      "analysis code and random seed",
+      "protocol and schemas",
+      "source-data cut-off and UTC freeze timestamp"
+    ],
+    "source_hashes": "PENDING_EXPLICIT_FREEZE_CONSENT",
+    "rules_must_not_change_during_forward_window": true
+  },
+  "event_universe": {
+    "source": "every sequential xtracker Tweet/Post Count market returned by the registered discovery process; not only alerted, top-25, completed, or liquid rows",
+    "registration_time": "at first discovery, before outcome and before arm decisions",
+    "required_registration_rows": ["eligible signal", "rejected signal", "no trade", "evidence failure", "void", "unresolved", "completed"],
+    "candidate_and_baseline_share_identical_universe": true,
+    "candidate_rejection_treatment": "zero-PnL no-trade outcome retained in paired comparison",
+    "deduplication": "one opportunity_id per condition_id; one cluster_id for the same account and overlapping resolution/exposure windows; adjacent or duplicate buckets remain one event lifecycle"
+  },
+  "candidate_arms": [
+    {
+      "id": "entry_limit_025",
+      "single_change": "Reject when either post-latency full-quantity marginal ask or depth-walk VWAP exceeds 0.25; rejected opportunities remain zero-PnL paired observations.",
+      "all_other_baseline_rules_unchanged": true
+    },
+    {
+      "id": "event_risk_cap_10usd",
+      "single_change": "Choose the greatest whole-share quantity whose post-latency depth-walk entry cost plus registered fees and one-tick adverse buffer is at most 10 USD; never exceed baseline quantity or displayed depth.",
+      "all_other_baseline_rules_unchanged": true
+    },
+    {
+      "id": "early_drawdown_exit_25pct",
+      "single_change": "At the first registered five-minute monitoring decision where contemporaneous bid-side depth-walk VWAP is at or below 75% of entry VWAP, submit a paper exit; fill against the first separately captured post-latency book. Partial executable quantity exits and residual inventory remains marked as open, never discarded.",
+      "all_other_baseline_rules_unchanged": true
+    }
+  ],
+  "causal_timing_and_execution": {
+    "clock": "UTC with monotonic timestamps retained where available",
+    "signal_fields_required": ["source publication time", "source receipt time", "feature cutoff", "model start", "decision complete"],
+    "decision_book": "raw CLOB payload captured with request start, response receipt, provider timestamp or sequence, endpoint, HTTP status, and SHA-256; never used as the fill book",
+    "paper_order_latency": "max(500 milliseconds, measured decision-book round-trip time)",
+    "fill_book": "first independently captured CLOB book at or after decision_complete plus paper_order_latency",
+    "maximum_decision_book_rtt_ms": 2000,
+    "maximum_provider_staleness_ms": 2000,
+    "fill_model": "walk raw contemporaneous asks for buys and bids for sells; record every level, partial fill, requested quantity, filled quantity, marginal price, and VWAP; never midpoint or a later convenience mark",
+    "fees": "use timestamp-valid CLOB fee-rate response and market fee metadata archived and hashed for each lifecycle; missing or inconsistent fee data is an evidence failure",
+    "primary_slippage": "post-latency depth walk plus actual registered fee schedule",
+    "stress_slippage": "primary execution with an additional two adverse ticks on every filled share",
+    "settlement": "independently archive and hash condition/outcome mapping, resolution source, final count, void/dispute status, and settlement timestamp"
+  },
+  "evidence_failure_policy": {
+    "all_failures_remain_in_denominator": true,
+    "maximum_event_level_failure_rate": 0.05,
+    "complete_case_result": "reported but never sufficient for promotion",
+    "primary_intention_to_treat_sensitivity": "assign each post-signal evidence failure the negative of that arm's planned worst-case event risk; promotion requires positive expectancy both with this assignment and under complete-case accounting",
+    "missing_identity_or_timing": "execution_evidence_eligible=false and net_capturable=false"
+  },
+  "independence_and_accounting": {
+    "primary_unit": "cluster_id",
+    "cluster_algorithm": "same social account plus overlapping market resolution window or overlapping open-exposure interval belongs to one cluster; all mutually exclusive buckets and rebalances within a condition remain one lifecycle",
+    "one_statistical_vote_per_cluster": true,
+    "cash_reconciliation": "for every arm and lifecycle: initial cash - entry costs + exit/settlement proceeds - fees - slippage + residual inventory at settlement must equal final cash and net PnL",
+    "fixed_bankroll_usd": 1000,
+    "maximum_simultaneous_committed_risk_usd": 100,
+    "capital_conflict_rule": "when simultaneous eligible opportunities exceed the cap, allocate in deterministic ascending opportunity_id order for every arm"
+  },
+  "statistics": {
+    "primary_estimand": "mean net PnL per registered independent cluster under intention-to-treat accounting",
+    "paired_estimand": "mean cluster-level candidate net PnL minus frozen-baseline net PnL over the identical registered universe",
+    "hypothesis_family": "six one-sided tests: absolute expectancy and paired uplift for each of three candidate arms",
+    "alpha": 0.05,
+    "multiplicity": "Holm correction across all six tests",
+    "confidence_method": "percentile cluster bootstrap with 50000 resamples, cluster_id as resampling unit, deterministic seed 20260720; report Holm-adjusted one-sided 95% lower bounds",
+    "small_sample_rule": "no inference below 30 completed independent clusters per arm and 30 paired clusters; never substitute leg count for cluster count",
+    "economically_meaningful_threshold": "point estimate of net PnL divided by committed risk must be at least 0.02 per cluster under primary execution and remain positive under two-tick stress",
+    "profit_factor": "secondary diagnostic only; define as gross positive net PnL divided by absolute gross negative net PnL and report undefined when denominator is zero"
+  },
+  "promotion_gates": {
+    "minimum_registered_independent_clusters": 30,
+    "minimum_executable_completed_clusters_per_arm": 30,
+    "minimum_net_capturable_completed_clusters_per_arm": 30,
+    "event_level_evidence_failure_rate_at_most": 0.05,
+    "aggregate_net_pnl_positive": true,
+    "holm_adjusted_lower_bound_absolute_expectancy_above_zero": true,
+    "holm_adjusted_lower_bound_paired_uplift_above_zero": true,
+    "economic_threshold_met": true,
+    "two_tick_stress_expectancy_positive": true,
+    "cash_and_inventory_reconciled": true,
+    "paper_only_after_gate": true,
+    "live_transition": "never authorized by this protocol; requires a separate explicit user decision and safety review"
+  },
+  "audit_artifacts_required": [
+    "append-only opportunity registry with sequence numbers",
+    "raw signal, decision-book, fill-book, fee, identity, and settlement URIs with separate SHA-256 hashes",
+    "baseline and candidate decision rows including rejections and no-trades",
+    "position, fill, lifecycle, cluster, and paired-comparison identifiers",
+    "amendment ledger; any substantive amendment resets forward_start and sample"
+  ],
+  "current_hard_blockers": [
+    "Immutable strategy copy/hash was blocked pending explicit filesystem consent.",
+    "Operational entry filter and historical ledger use different rule versions.",
+    "Frozen historical X sample has zero executable completed legs.",
+    "Public-record pipeline has zero net-capturable markouts.",
+    "Current five-minute snapshots do not preserve a separate post-decision latency fill book for confirmatory execution evidence."
+  ]
+}

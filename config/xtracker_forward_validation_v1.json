@@ -1,0 +1,72 @@
+{
+  "schema_version": "xtracker_forward_validation_protocol_v1",
+  "protocol_id": "xtracker_forward_v1_20260720",
+  "status": "SUPERSEDED_BY_xtracker_forward_validation_v2_DO_NOT_USE",
+  "paper_only": true,
+  "wallet_or_authentication_allowed": false,
+  "live_orders_allowed": false,
+  "historical_sample_use": "diagnostic_only_no_rule_promotion",
+  "baseline": {
+    "name": "consensus_v3_rebalance_frozen_baseline",
+    "source_files": [
+      "xtracker_tweet_watchdog.py",
+      "xtracker_paper_rebalance_ledger.py"
+    ],
+    "source_hashes": "PENDING_EXPLICIT_FREEZE_CONSENT",
+    "rules_must_not_change_during_forward_window": true
+  },
+  "candidate_arms": [
+    {
+      "id": "entry_limit_025",
+      "single_change": "Reject a new entry when the timestamp-valid executable ask exceeds 0.25.",
+      "baseline_quantity_rule_unchanged": true
+    },
+    {
+      "id": "event_risk_cap_10usd",
+      "single_change": "Cap worst-case entry notional per independent event lifecycle at 10 USD; quantity is min(baseline quantity, floor(10/executable ask), displayed executable depth).",
+      "entry_and_exit_rules_unchanged": true
+    },
+    {
+      "id": "early_drawdown_exit_25pct",
+      "single_change": "At the first later timestamp-valid book with sufficient executable bid depth, exit when executable bid is at or below 75% of entry price.",
+      "entry_and_quantity_rules_unchanged": true
+    }
+  ],
+  "evidence_eligibility": {
+    "entry_book_timing_quality": "exact_request_response",
+    "exit_book_timing_quality": "exact_request_response_or_independently_verified_settlement",
+    "request_started_at_required": true,
+    "response_received_at_required": true,
+    "condition_token_outcome_identity_required": true,
+    "full_captured_levels_required": true,
+    "displayed_depth_must_cover_quantity": true,
+    "fill_model": "walk contemporaneous captured asks for buys and bids for sells; never midpoint or later mark",
+    "fees_required": true,
+    "slippage_policy": "captured depth walk plus registered conservative latency penalty; no zero-cost fallback",
+    "settlement_required_for_positions_not_exited": true,
+    "missing_or_ambiguous_data_policy": "exclude_from_expectancy_and count_as_evidence_failure"
+  },
+  "independence_unit": {
+    "unit": "market_event_lifecycle",
+    "one_vote_per_underlying_event": true,
+    "rebalance_legs_within_one_event_are_not_independent": true,
+    "overlapping_windows_or_duplicate_market_identifiers_are_clustered": true
+  },
+  "promotion_gates": {
+    "minimum_independent_completed_events": 30,
+    "minimum_executable_completed_legs": 30,
+    "minimum_net_capturable_completed_legs": 30,
+    "aggregate_net_pnl_must_be_positive": true,
+    "mean_net_expectancy_per_independent_event_must_be_positive": true,
+    "paired_candidate_minus_baseline_net_expectancy_must_be_positive": true,
+    "confidence_rule": "95% cluster-bootstrap lower bound for candidate net expectancy and paired uplift must both exceed 0 after Holm correction across the three registered arms",
+    "profit_factor_must_exceed": 1.0,
+    "paper_only_after_promotion_gate": true,
+    "live_transition": "requires a separate explicit user decision and new safety review; this protocol never authorizes live trading"
+  },
+  "current_hard_blockers": [
+    "Frozen historical X sample has zero executable completed legs.",
+    "Public-record pipeline has zero net-capturable markouts.",
+    "Immutable strategy copy/hash operation is pending explicit filesystem consent."
+  ]
+}

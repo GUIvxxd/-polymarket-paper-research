@@ -1,0 +1,2 @@
+# Runtime dependency for the rolling collector's hash-chained Zstandard archive.
+zstandard==0.23.0

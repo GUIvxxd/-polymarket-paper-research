@@ -1,0 +1,125 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.kdbx
+*.asc
+*.gpg
+*.age
+.netrc
+.npmrc
+.pypirc
+**/.ssh/
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+*credentials*.json
+*secrets*.json
+*secret*.yaml
+*secret*.yml
+*wallet*.json
+*keystore*.json
+*mnemonic*.txt
+*seed_phrase*.txt
+*cookies*.txt
+*.cookie
+
+# Mutable production/runtime state. Keep these paths where the scheduler expects
+# them, but back them up outside Git.
+/data/**
+/reports/**
+/logs/**
+/REPORT.md
+
+# A separate nested prototype/repository and its virtual environment. Do not
+# embed its .git directory in this parent repository.
+/repos/**
+
+# Python environments, bytecode and tool caches
+.venv/
+venv/
+env/
+virtualenv/
+**/.venv/
+**/venv/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Node artifacts (the active project is Python-only, but prevent accidental
+# vendoring if Node tooling is used for documentation later).
+node_modules/
+.npm/
+.yarn/
+.pnpm-store/
+
+# Runtime databases outside the canonical data/ directory
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.db-shm
+*.db-wal
+
+# Logs, captures and large generated binary formats
+*.log
+*.bssraw
+*.parquet
+*.parquet.zst
+*.feather
+*.arrow
+*.orc
+*.avro
+*.pcap
+*.pcapng
+*.zst
+*.gz
+*.bz2
+*.xz
+*.zip
+*.tar
+*.tgz
+
+# Editor, OS and temporary files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+.cache/
+tmp/
+temp/
+
+# Deterministic fixtures are source artifacts even when their extensions match
+# generated data. These rules intentionally come last.
+!tests/fixtures/
+!tests/fixtures/**
+!testdata/
+!testdata/**
+!fixtures/
+!fixtures/**

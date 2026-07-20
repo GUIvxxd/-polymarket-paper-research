@@ -1,0 +1,50 @@
+{
+  "activation_utc": "2026-07-20T15:50:54.234Z",
+  "amendment_rule": "substantive change requires v5 and resets the forward sample",
+  "candidate_parameters": {
+    "early_drawdown_exit_ratio": 0.75,
+    "entry_limit_max_vwap_and_marginal": 0.25,
+    "event_risk_cap_usd_including_fee_and_one_tick_buffer": 10.0
+  },
+  "exact_exit_constants": {
+    "better_bucket_edge_delta": 0.1,
+    "fair_collapse_threshold": 0.2,
+    "minimum_absolute_profit_per_share": 0.03,
+    "minimum_relative_profit": 0.2,
+    "rebalance_maximum_ask": 0.25,
+    "rebalance_minimum_edge": 0.5,
+    "rebalance_minimum_fair": 0.7,
+    "stale_bid_edge": 0.1
+  },
+  "fixed_end": {
+    "calendar_days": 180,
+    "completed_independent_clusters": 100,
+    "whichever_first": true
+  },
+  "forward_capture_sha256": "61bed6d639c43f58cc5d260e5aa2ba4e90cb42452d5d7cce8579bf697e508add",
+  "frozen_decision_rule_hashes": {
+    "/data/workspace/polymarket-research/xtracker_paper_rebalance_ledger.py": "3550584f16a10dd27b5066f5bea3a79963673c9099ec92f92aa979b04b1fd227",
+    "/data/workspace/polymarket-research/xtracker_tweet_watchdog.py": "24635ed1cd97cae42a97cb5239a2e205182c6078e96122f243048e2761a1578a"
+  },
+  "frozen_strategy_manifest_path": "/data/workspace/polymarket-research/reports/xtracker_strategy_freeze/xtracker_frozen_20260720T151927Z/FREEZE_MANIFEST.json",
+  "frozen_strategy_manifest_sha256": "4935ef0f710cf33d0217ae7d103015224d8cfd34b70624bce3d7512237c0887f",
+  "historical_rows_count": false,
+  "live_orders_allowed": false,
+  "lock_sha256": "497bee78a3eeeb994747014299db2959d612a6a29f9473a59e6e714e4f438ef7",
+  "locked_source_sha256": {
+    "/data/scripts/xtracker_tweet_watchdog.sh": "a8830f6f4851fa82e1aaadb04bd4851d55232357b55f6ebc342ffea905acb2ec",
+    "/data/workspace/polymarket-research/config/xtracker_forward_validation_v4.json": "2677b7507f34cec1779aaed9b8e66d69e713719771eea75dc02581f82b29c7a4",
+    "/data/workspace/polymarket-research/xtracker_forward_capture.py": "61bed6d639c43f58cc5d260e5aa2ba4e90cb42452d5d7cce8579bf697e508add",
+    "/data/workspace/polymarket-research/xtracker_forward_engine_v4.py": "087dfff27381a5b4689774ade5f45f70b21f4f6368a60fd4836f20abe3df274b",
+    "/data/workspace/polymarket-research/xtracker_forward_monitor_v4.py": "0675976d22cd08948e746c458072cd58f442a2dec6b5da85447b84c94ae0e084",
+    "/data/workspace/polymarket-research/xtracker_tweet_depth_check.py": "318075e9abbf79ecac854d16aa841e3f632f17e7485c0390cdf3f371e50ffa22",
+    "/data/workspace/polymarket-research/xtracker_tweet_watchdog.py": "24635ed1cd97cae42a97cb5239a2e205182c6078e96122f243048e2761a1578a"
+  },
+  "minimum_executable_net_capturable_clusters_per_arm": 30,
+  "paper_only": true,
+  "protocol_id": "xtracker_forward_v4_20260720",
+  "protocol_sha256": "2677b7507f34cec1779aaed9b8e66d69e713719771eea75dc02581f82b29c7a4",
+  "schema_version": "xtracker_forward_validation_lock_v2",
+  "v3_rows_count": false,
+  "wallet_or_authentication_allowed": false
+}

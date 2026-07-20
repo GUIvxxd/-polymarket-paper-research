@@ -1,0 +1,113 @@
+{
+  "schema_version": "xtracker_forward_validation_protocol_v3",
+  "protocol_id": "xtracker_forward_v3_20260720",
+  "status": "ACTIVATES_ONLY_AT_BASELINE_LOCK_TIMESTAMP",
+  "paper_only": true,
+  "wallet_or_authentication_allowed": false,
+  "live_orders_allowed": false,
+  "historical_sample": {
+    "use": "forensic diagnosis only",
+    "promotion_credit": false,
+    "reason": "zero strict post-decision/post-latency executable completed legs and a v2/v3 rule-version mismatch"
+  },
+  "baseline": {
+    "name": "frozen_v3_entry_plus_frozen_rebalance_exit_constants",
+    "entry_decision_source": "the selected event candidates emitted by consensus_v3_2026_07_16 after event locking",
+    "sizing": "100-share FOK paper order walked against the first separate post-latency ask book",
+    "exit_constants": {
+      "absolute_profit_per_share": 0.015,
+      "relative_profit": 0.25,
+      "fair_collapse_threshold": 0.2,
+      "stale_bid_edge": 0.1,
+      "better_bucket_edge_improvement": 0.15,
+      "monitoring_cadence": "the existing five-minute watchdog cadence"
+    },
+    "historical_relabeling": false,
+    "rule_changes_during_window": false,
+    "source_lock": "config/xtracker_forward_validation_v3.lock.json"
+  },
+  "activation": {
+    "forward_start_source": "activation_utc in the signed/hash-locked baseline lock",
+    "pre_activation_rows_count": false,
+    "fixed_end_rule": "first of 100 completed registered independent clusters or 180 calendar days after activation",
+    "minimum_executable_completed_clusters_per_arm": 30,
+    "analysis_times": ["fixed_end_only"],
+    "interim_reporting": "operational counts, missing-evidence counts, process health, and safety only; no PnL ranking, parameter changes, optional stopping, or promotion"
+  },
+  "registered_arms": [
+    {
+      "id": "baseline",
+      "change": "none"
+    },
+    {
+      "id": "entry_limit_025",
+      "single_change": "reject the paired paper entry unless post-latency full-quantity ask depth has both VWAP and marginal price at or below 0.25"
+    },
+    {
+      "id": "event_risk_cap_10usd",
+      "single_change": "use the greatest whole-share FOK quantity not exceeding baseline quantity whose depth-walk cost plus protocol fee plus one adverse tick per share is at most 10 USD and meets market minimum order size"
+    },
+    {
+      "id": "early_drawdown_exit_25pct",
+      "single_change": "at the first registered five-minute decision where full-quantity contemporaneous bid VWAP is at or below 75 percent of entry VWAP, capture a separate post-latency sell book and paper-exit the executable quantity; residual shares remain open"
+    }
+  ],
+  "universe_and_independence": {
+    "registry": "all rows emitted by each sequential v3 depth run, including rejected rows, missing books, selected candidates, no-trades, unresolved and settled lifecycles",
+    "entry_selection": "the exact current v3 selected candidate map after one-bucket-per-event locking",
+    "opportunity_id": "condition_id plus first-discovery sequence",
+    "lifecycle_id": "condition_id",
+    "cluster_rule": "same social account with overlapping market resolution or exposure windows is one cluster; mutually exclusive buckets and rebalances are one lifecycle",
+    "primary_unit": "independent cluster, never leg or snapshot"
+  },
+  "timing_and_execution": {
+    "decision_book": "raw public CLOB payload persisted by the depth collector with endpoint, HTTP status, request start, response receipt, provider timestamp and SHA-256",
+    "paper_order_latency_ms": "maximum of 500, decision-book RTT, and documented taker delay when present",
+    "fill_book": "first separately requested public CLOB payload whose request starts no earlier than decision complete plus paper latency",
+    "maximum_book_rtt_ms": 2000,
+    "maximum_provider_staleness_ms": 2000,
+    "fill_model": "FOK full-depth walk; no midpoint, top-mark extrapolation, later convenience mark, or invented fill",
+    "partial_exit_rule": "record executable partial exit and retain residual inventory",
+    "identity": "condition_id, selected token, outcome label and raw-book market/asset identifiers must agree",
+    "fees": "archive raw clob-markets/{condition_id} and fee-rate?token_id responses; require tbf/base_fee agreement, fd.e=1 and explicit fd.r; fee equals shares times fd.r times p times (1-p), rounded to five decimals",
+    "fee_failure": "missing, ambiguous or inconsistent metadata makes the arm row execution-ineligible and net_capturable=false",
+    "stress": "repeat accounting with two adverse ticks per filled share"
+  },
+  "evidence_failure_policy": {
+    "retain_all_failures_in_denominator": true,
+    "maximum_cluster_failure_rate": 0.05,
+    "primary_sensitivity": "assign each post-signal evidence failure the negative of that arm's planned worst-case event risk",
+    "complete_case_only_never_promotes": true
+  },
+  "statistics": {
+    "primary_estimand": "mean net PnL per registered independent cluster",
+    "paired_estimand": "mean candidate-minus-baseline net PnL over the identical registered cluster universe; rejected candidate entries are retained as zero-PnL paired outcomes",
+    "hypothesis_family": "six one-sided tests: absolute expectancy and paired uplift for each candidate arm",
+    "multiplicity": "Holm correction over six tests",
+    "confidence": "50000-resample cluster bootstrap, deterministic seed 20260720, one-sided Holm-adjusted 95 percent lower bounds",
+    "minimum_clusters": 30,
+    "economic_threshold": "net PnL divided by committed risk at least 0.02 per cluster and positive under two-adverse-tick stress"
+  },
+  "promotion_gates": {
+    "executable_completed_clusters_per_arm_at_least": 30,
+    "net_capturable_completed_clusters_per_arm_at_least": 30,
+    "aggregate_net_pnl_positive": true,
+    "cluster_expectancy_positive": true,
+    "holm_adjusted_absolute_lower_bound_above_zero": true,
+    "holm_adjusted_paired_uplift_lower_bound_above_zero": true,
+    "stress_expectancy_positive": true,
+    "evidence_failure_rate_at_most": 0.05,
+    "cash_inventory_and_settlement_reconciled": true,
+    "public_record_net_capturable_markouts": "separate pipeline; remains zero and receives no credit here",
+    "live_transition": "not authorized by this protocol; paper-only remains mandatory even after a pass until a separate explicit user decision and safety review"
+  },
+  "append_only_artifacts": [
+    "reports/xtracker_forward_validation/v3/opportunity_registry.jsonl",
+    "reports/xtracker_forward_validation/v3/evidence_events.jsonl",
+    "reports/xtracker_forward_validation/v3/independent_event_ledger.csv",
+    "reports/xtracker_forward_validation/v3/raw/",
+    "reports/xtracker_forward_validation/v3/state.json",
+    "reports/xtracker_forward_validation/v3/status.json"
+  ],
+  "amendments": "any substantive rule, universe, execution, clustering, fee, statistical or stopping change creates v4 and resets the forward sample"
+}
