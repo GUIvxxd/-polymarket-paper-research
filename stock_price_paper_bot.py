@@ -47,6 +47,17 @@ CONSENSUS_MIN_SIGNALS = 9
 MAX_ENTRY_SPREAD = 0.06
 MIN_EDGE_TO_SPREAD = 1.25
 MIN_REFERENCE_DISTANCE = 0.005
+LEGACY_PNL_VALIDITY = {
+    "execution_valid_pnl": False,
+    "net_capturable": False,
+    "paper_pnl_basis": "legacy_stock_top_of_book_100_shares",
+    "invalid_reasons": [
+        "no_polymarket_fee_accounting",
+        "no_post_decision_latency_fill_book",
+        "no_depth_walk_or_queue_model",
+        "settlement_from_public_reference_price_not_polymarket_resolution_proof",
+    ],
+}
 
 
 def utc_now() -> str:
@@ -277,6 +288,9 @@ def close_position(pos: dict[str, Any], *, run_at: str, exit_price: float, reaso
         and (fnum(pos.get("exit_bid_size")) or 0) >= (fnum(pos.get("stake_shares")) or STAKE_SHARES)
     )
     pos["execution_evidence_eligible"] = pos["gross_top_of_book_feasible"]
+    pos["execution_valid_pnl"] = False
+    pos["net_capturable"] = False
+    pos["pnl_validity_reason"] = "legacy_stock_top_of_book_no_fees_no_latency_no_resolution_proof"
     return pos
 
 
@@ -400,6 +414,9 @@ def strategy_signals_from_positions(positions: list[dict[str, Any]]) -> list[dic
                     "ticker": pos.get("ticker"), "side": pos.get("side"),
                     "price": pos.get(f"{prefix}_price"), "legacy_paper_pnl": pos.get("paper_pnl"),
                     "gross_top_of_book_feasible": pos.get("gross_top_of_book_feasible"),
+                    "execution_valid_pnl": False,
+                    "net_capturable": False,
+                    "pnl_validity_reason": "legacy_stock_top_of_book_no_fees_no_latency_no_resolution_proof",
                 },
             ))
     return signals
@@ -422,6 +439,9 @@ def summarize_positions(positions: list[dict[str, Any]]) -> dict[str, Any]:
         "breakeven": breakeven,
         "win_rate": round(wins / len(closed), 4) if closed else None,
         "paper_pnl_at_100_shares": round(pnl, 4),
+        "execution_valid_pnl": False,
+        "net_capturable": False,
+        "paper_pnl_basis": LEGACY_PNL_VALIDITY["paper_pnl_basis"],
         "avg_roi": round(sum(rois) / len(rois), 6) if rois else None,
         "gross_top_of_book_feasible_trades": sum(bool(p.get("gross_top_of_book_feasible")) for p in closed),
         "execution_evidence_eligible_trades": sum(bool(p.get("execution_evidence_eligible")) for p in closed),
@@ -453,6 +473,7 @@ def render_markdown(report: dict[str, Any]) -> str:
     lines.append(f"Generated: `{report['run_at_utc']}`")
     lines.append("")
     lines.append("Paper-only. No wallet, no private keys, no live orders.")
+    lines.append("Legacy paper PnL is research-only: not execution-valid and not net-capturable because fees, post-decision fill latency, depth walking, queueing, and Polymarket resolution proof are not fully modeled here.")
     lines.append("")
     lines.append("## Scanner run")
     lines.append("")
@@ -617,6 +638,7 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
     report = {
         "run_at_utc": run_at,
         "paper_only": True,
+        "execution_validity": LEGACY_PNL_VALIDITY,
         "filter_version": FILTER_VERSION,
         "parameters": {
             "max_markets": args.max_markets,
@@ -666,6 +688,9 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
         "exit_reason",
         "paper_pnl",
         "roi_on_entry",
+        "execution_valid_pnl",
+        "net_capturable",
+        "pnl_validity_reason",
     ]
     write_csv(LEDGER_CSV, positions, fields)
     write_csv(TRADES_CSV, [p for p in positions if p.get("status") == "closed"], fields)

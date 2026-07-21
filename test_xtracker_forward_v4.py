@@ -1,11 +1,13 @@
 from __future__ import annotations
-import importlib.util,json,unittest
+import hashlib,importlib.util,json,unittest
 from pathlib import Path
 
 ROOT=Path('/data/workspace/polymarket-research')
 def load(path,name):
  spec=importlib.util.spec_from_file_location(name,path); assert spec and spec.loader
  mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); return mod
+def sha256_lf(path):
+ return hashlib.sha256(path.read_bytes().replace(b'\r\n',b'\n')).hexdigest()
 core=load(ROOT/'xtracker_forward_capture.py','v4_core_test')
 monitor=load(ROOT/'xtracker_forward_monitor_v4.py','v4_monitor_test')
 
@@ -46,10 +48,23 @@ class ProtocolTests(unittest.TestCase):
  def test_v3_is_explicitly_excluded(self):
   protocol=json.loads((ROOT/'config/xtracker_forward_validation_v4.json').read_text())
   self.assertIn('v3_pilot',protocol['excluded_samples'])
+ def test_lock_self_hash_and_locked_repo_sources_match(self):
+  lock=json.loads((ROOT/'config/xtracker_forward_validation_v4.lock.json').read_text())
+  body={k:v for k,v in lock.items() if k!='lock_sha256'}
+  expected=hashlib.sha256(json.dumps(body,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
+  self.assertEqual(lock['lock_sha256'],expected)
+  prefix='/data/workspace/polymarket-research/'
+  for raw_path,digest in lock['locked_source_sha256'].items():
+   if not raw_path.startswith(prefix):continue
+   rel=raw_path.removeprefix(prefix)
+   self.assertEqual(sha256_lf(ROOT/rel),digest,rel)
 
 class SafetyTests(unittest.TestCase):
  def test_locked_sources_have_no_order_or_auth_api(self):
   text='\n'.join((ROOT/name).read_text().lower() for name in ('xtracker_forward_capture.py','xtracker_forward_monitor_v4.py','xtracker_forward_engine_v4.py'))
   self.assertNotIn('/order',text);self.assertNotIn('private_key',text);self.assertNotIn('api_key',text);self.assertNotIn('authorization',text)
+ def test_engine_wraps_capture_enrich_monitor_in_exclusive_lock(self):
+  text=(ROOT/'xtracker_forward_engine_v4.py').read_text()
+  self.assertIn("with core.exclusive_run_lock('xtracker_forward_engine_v4'):",text)
 
 if __name__=='__main__':unittest.main()

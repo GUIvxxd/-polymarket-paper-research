@@ -45,6 +45,25 @@ class ChainTests(unittest.TestCase):
             rows=[json.loads(line) for line in path.read_text().splitlines()]
             self.assertEqual(len(rows),2)
 
+    def test_exclusive_run_lock_blocks_overlapping_owner(self):
+        old_out=xf.OUT
+        with tempfile.TemporaryDirectory() as td:
+            xf.OUT=Path(td)
+            lock_path=xf.OUT/'run.lock'
+            try:
+                with xf.exclusive_run_lock('first') as metadata:
+                    self.assertTrue(lock_path.exists())
+                    self.assertEqual(metadata['owner'],'first')
+                    with self.assertRaises(SystemExit) as ctx:
+                        with xf.exclusive_run_lock('second'):
+                            pass
+                    self.assertIn('exclusive run lock already held',str(ctx.exception))
+                self.assertFalse(lock_path.exists())
+                with xf.exclusive_run_lock('second') as metadata:
+                    self.assertEqual(metadata['owner'],'second')
+            finally:
+                xf.OUT=old_out
+
 class IdentityTests(unittest.TestCase):
     def test_decision_evidence_rejects_missing_request_start(self):
         with tempfile.TemporaryDirectory() as td:

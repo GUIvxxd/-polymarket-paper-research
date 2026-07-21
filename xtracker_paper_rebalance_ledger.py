@@ -66,6 +66,18 @@ REBALANCE_MIN_EDGE = 0.50
 REBALANCE_MIN_FAIR = 0.70
 REBALANCE_MAX_ASK = 0.25
 STAKE_PER_TRADE = 100.0  # paper shares; PnL is linear, so ROI is unaffected.
+LEGACY_PNL_VALIDITY = {
+    "execution_valid_pnl": False,
+    "net_capturable": False,
+    "paper_pnl_basis": "legacy_xtracker_sparse_snapshot_top_of_book_100_shares",
+    "invalid_reasons": [
+        "sparse_watchdog_snapshots_not_full_historical_books",
+        "zero_fee_legacy_assumption",
+        "no_post_decision_latency_fill_book",
+        "no_depth_walk_or_queue_model",
+        "historical_v2_filter_not_current_v4_forward_protocol",
+    ],
+}
 
 MONTHS = {
     "January": 1,
@@ -162,6 +174,9 @@ class ClosedTrade:
     exit_book_timing_quality: str | None = None
     gross_top_of_book_feasible: bool = False
     execution_evidence_eligible: bool = False
+    execution_valid_pnl: bool = False
+    net_capturable: bool = False
+    pnl_validity_reason: str = "legacy_xtracker_sparse_snapshot_top_of_book_zero_fee_no_latency"
 
 
 def parse_time(raw: str) -> dt.datetime:
@@ -526,6 +541,9 @@ def close_position(
         exit_book_timing_quality=exit_book.get("timing_quality") if exit_book else None,
         gross_top_of_book_feasible=top_feasible,
         execution_evidence_eligible=top_feasible,
+        execution_valid_pnl=False,
+        net_capturable=False,
+        pnl_validity_reason="legacy_xtracker_sparse_snapshot_top_of_book_zero_fee_no_latency",
     )
 
 
@@ -652,6 +670,8 @@ def summarize(trades: list[ClosedTrade]) -> dict[str, Any]:
             "average_winner": None, "average_loser": None, "profit_factor": None,
             "positive_exits": 0, "negative_exits": 0,
             "gross_top_of_book_feasible_trades": 0,
+            "execution_valid_pnl": False, "net_capturable": False,
+            "paper_pnl_basis": LEGACY_PNL_VALIDITY["paper_pnl_basis"],
         }
     wins = [t for t in trades if t.pnl_per_share > 0]
     losses = [t for t in trades if t.pnl_per_share < 0]
@@ -675,6 +695,9 @@ def summarize(trades: list[ClosedTrade]) -> dict[str, Any]:
         "positive_exits": len([t for t in trades if "exit" in t.exit_reason and t.pnl_per_share > 0]),
         "negative_exits": len([t for t in trades if "exit" in t.exit_reason and t.pnl_per_share < 0]),
         "gross_top_of_book_feasible_trades": sum(t.gross_top_of_book_feasible for t in trades),
+        "execution_valid_pnl": False,
+        "net_capturable": False,
+        "paper_pnl_basis": LEGACY_PNL_VALIDITY["paper_pnl_basis"],
     }
 
 
@@ -728,6 +751,9 @@ def reconcile_lifecycles(
             "sale_or_settlement_proceeds": round(sale_notional, 6),
             "fees_assumed": 0.0,
             "spread_model": "stored entry ask and exit bid; no invented midpoint fills",
+            "execution_valid_pnl": False,
+            "net_capturable": False,
+            "pnl_validity_reason": "legacy_xtracker_sparse_snapshot_top_of_book_zero_fee_no_latency",
             "ending_cash": round(ending_cash, 6),
             "remaining_inventory_shares": round(sum(pos.quantity for pos in opened), 6),
             "inventory_value": round(inventory_value, 6),
@@ -793,6 +819,9 @@ def strategy_signals_from_ledger(ledger: list[dict[str, Any]]) -> list[dict[str,
                 "event": row.get("event"), "handle": row.get("handle"), "bucket": row.get("bucket"),
                 "price": row.get(f"{prefix}_price"), "fair": row.get(f"{prefix}_fair"),
                 "edge": row.get(f"{prefix}_edge"), "legacy_paper_pnl": row.get("paper_pnl"),
+                "execution_valid_pnl": False,
+                "net_capturable": False,
+                "pnl_validity_reason": "legacy_xtracker_sparse_snapshot_top_of_book_zero_fee_no_latency",
             },
         ))
     return signals
@@ -838,6 +867,7 @@ def make_markdown(payload: dict[str, Any]) -> str:
         f"Generated: `{payload['generated_at']}`",
         "",
         "Paper-only. No wallet, no live orders, no X API spend.",
+        "Legacy paper PnL is research-only: not execution-valid and not net-capturable because this replay uses sparse stored snapshots, zero-fee legacy accounting, no post-decision fill latency, no depth walking, and no queue model.",
         "",
         "## What changed",
         "",
@@ -871,7 +901,7 @@ def make_markdown(payload: dict[str, Any]) -> str:
         f"- Gross top-of-book feasible completed legs: `{lifecycle.get('gross_top_of_book_feasible_legs')}`.",
         f"- Matched closed opportunities (`{len(matched_closed)}`): rebalance `{matched_rebalance_pnl}` versus hold `{matched_hold_pnl}`.",
         "- Invariant used: `ending_cash + inventory_value - initial_cash = realized_PnL + unrealized_PnL`.",
-        "- Legacy fee assumption remains zero and is disclosed; historical request/response timing is absent, so these are not causal-v2 executable results.",
+        "- Legacy fee assumption remains zero and is disclosed; historical request/response timing is absent, so these are not execution-valid or net-capturable results.",
         "",
         f"Open rebalance positions: `{payload['open_positions']}`",
         "",
@@ -1000,6 +1030,7 @@ def main() -> int:
     OUT_LIFECYCLE_JSON.write_text(json.dumps({
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "accounting_basis": "per-market lifecycle; $100 initial cash; 100 paper shares per leg; zero fees retained as legacy assumption",
+        "execution_validity": LEGACY_PNL_VALIDITY,
         "lifecycles": lifecycle_rows,
         "matched_hold_vs_rebalance": matched_comparison,
     }, indent=2, ensure_ascii=False))
@@ -1007,6 +1038,7 @@ def main() -> int:
     payload = {
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "paper_only": True,
+        "execution_validity": LEGACY_PNL_VALIDITY,
         "snapshot_records": len(records),
         "source_snapshots": str(SNAPSHOTS),
         "source_proof": str(PROOF),

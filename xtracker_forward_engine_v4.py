@@ -48,10 +48,11 @@ def main():
             if not path.is_file() or core.sha_file(path)!=digest: raise SystemExit(f'locked source hash mismatch: {path}')
         if core.sha_file(Path(lock['frozen_strategy_manifest_path']))!=lock['frozen_strategy_manifest_sha256']:
             raise SystemExit('frozen strategy manifest hash mismatch')
-    rc=core.main()
-    if rc: return rc
-    enrich_open_positions(core)
-    monitor=load(ROOT/'xtracker_forward_monitor_v4.py','xtracker_forward_monitor_v4')
-    return monitor.main(core)
+    with core.exclusive_run_lock('xtracker_forward_engine_v4'):
+        rc=core.main()
+        if rc: return rc
+        enrich_open_positions(core)
+        monitor=load(ROOT/'xtracker_forward_monitor_v4.py','xtracker_forward_monitor_v4')
+        return monitor.main(core)
 
 if __name__=='__main__': raise SystemExit(main())

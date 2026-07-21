@@ -18,9 +18,10 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 ROOT=Path('/data/workspace/polymarket-research')
 PROTOCOL=ROOT/'config/xtracker_forward_validation_v3.json'
@@ -75,6 +76,30 @@ def atomic_json(path: Path, value: Any) -> None:
 def load_json(path: Path, default: Any) -> Any:
     try: return json.loads(path.read_text(encoding='utf-8'))
     except Exception: return default
+
+
+@contextmanager
+def exclusive_run_lock(owner: str = 'xtracker_forward') -> Iterator[dict[str,Any]]:
+    """Fail closed when another forward run already owns the mutable state tree."""
+    path=OUT/'run.lock'
+    path.parent.mkdir(parents=True,exist_ok=True)
+    metadata={'schema_version':'exclusive_run_lock_v1','owner':owner,'pid':os.getpid(),'acquired_at':utcnow(),'lock_path':str(path)}
+    flags=os.O_CREAT|os.O_EXCL|os.O_WRONLY
+    try:
+        fd=os.open(str(path),flags)
+    except FileExistsError as exc:
+        existing=load_json(path,{})
+        detail=f" owner={existing.get('owner')} pid={existing.get('pid')} acquired_at={existing.get('acquired_at')}" if existing else ''
+        raise SystemExit(f'exclusive run lock already held: {path}{detail}') from exc
+    try:
+        with os.fdopen(fd,'w',encoding='utf-8') as handle:
+            json.dump(metadata,handle,sort_keys=True); handle.write('\n'); handle.flush(); os.fsync(handle.fileno())
+        yield metadata
+    finally:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def append_chain(path: Path, record: dict[str,Any], state: dict[str,Any], chain_name: str) -> dict[str,Any]:

@@ -149,6 +149,26 @@ class StockDecisionEvidenceTests(unittest.TestCase):
         self.assertEqual(events[0]["market_lifecycle_id"], events[1]["market_lifecycle_id"])
         self.assertEqual(events[0]["targets"]["polymarket"][0]["token_id"], "yes-token")
 
+    def test_stock_legacy_pnl_is_labeled_non_execution_valid(self) -> None:
+        pos = {
+            "entry_price": 0.40,
+            "stake_shares": 100.0,
+            "entry_book_timing_quality": "exact_request_response",
+            "entry_ask_size": 150.0,
+        }
+        row = {
+            "bid": 0.50,
+            "bid_size": 150.0,
+            "book_timing_quality": "exact_request_response",
+        }
+        closed = stockbot.close_position(pos, run_at="2026-07-18T01:00:00Z", exit_price=0.50, reason="test", row=row)
+        summary = stockbot.summarize_positions([closed])
+        self.assertTrue(closed["gross_top_of_book_feasible"])
+        self.assertFalse(closed["execution_valid_pnl"])
+        self.assertFalse(closed["net_capturable"])
+        self.assertFalse(summary["execution_valid_pnl"])
+        self.assertFalse(summary["net_capturable"])
+
 
 class LifecycleAccountingTests(unittest.TestCase):
     def fixture(self) -> tuple[list[dict], list[xledger.ClosedTrade], list[xledger.Position]]:
@@ -209,6 +229,8 @@ class LifecycleAccountingTests(unittest.TestCase):
         row = lifecycles[0]
         self.assertEqual(row["switches"], 1)
         self.assertEqual(row["closed_legs"], 2)
+        self.assertFalse(row["execution_valid_pnl"])
+        self.assertFalse(row["net_capturable"])
         self.assertAlmostEqual(row["fixed_100_share_pnl"], -15.0)
         self.assertAlmostEqual(
             row["ending_cash"] + row["inventory_value"] - row["initial_cash"],
@@ -243,6 +265,8 @@ class LifecycleAccountingTests(unittest.TestCase):
         summary = xledger.summarize([*trades, zero])
         self.assertEqual(summary["closed_trades"], 3)
         self.assertEqual(summary["wins"] + summary["losses"] + summary["breakeven"], 3)
+        self.assertFalse(summary["execution_valid_pnl"])
+        self.assertFalse(summary["net_capturable"])
         self.assertIn("average_winner", summary)
         self.assertIn("average_loser", summary)
         self.assertIn("profit_factor", summary)
