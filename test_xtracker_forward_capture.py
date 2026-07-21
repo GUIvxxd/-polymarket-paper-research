@@ -2,14 +2,54 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-MODULE=Path('/data/workspace/polymarket-research/xtracker_forward_capture.py')
+ROOT=Path(__file__).resolve().parent
+MODULE=ROOT/'xtracker_forward_capture.py'
 spec=importlib.util.spec_from_file_location('xf',MODULE)
 assert spec and spec.loader
 xf=importlib.util.module_from_spec(spec); spec.loader.exec_module(xf)
+HAS_FCNTL=importlib.util.find_spec('fcntl') is not None
+
+CHILD_LOCK_SCRIPT=r"""
+from __future__ import annotations
+import importlib.util
+import os
+import sys
+from pathlib import Path
+
+module_path=Path(sys.argv[1])
+out_path=Path(sys.argv[2])
+mode=sys.argv[3]
+spec=importlib.util.spec_from_file_location('xf_child',module_path)
+assert spec and spec.loader
+xf=importlib.util.module_from_spec(spec); spec.loader.exec_module(xf)
+xf.OUT=out_path
+try:
+    if mode=='try':
+        with xf.exclusive_run_lock('child'):
+            print('entered',flush=True)
+        raise SystemExit(0)
+    if mode=='die':
+        with xf.exclusive_run_lock('child'):
+            print('held',flush=True)
+            os._exit(17)
+except SystemExit as exc:
+    print(str(exc),flush=True)
+    raise
+raise SystemExit('unknown child mode')
+"""
+
+def run_lock_child(out: Path, mode: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable,'-c',CHILD_LOCK_SCRIPT,str(MODULE),str(out),mode],
+        text=True,capture_output=True,check=False,
+    )
 
 class DepthWalkTests(unittest.TestCase):
     def test_full_depth_walk_uses_multiple_levels(self):
@@ -45,24 +85,66 @@ class ChainTests(unittest.TestCase):
             rows=[json.loads(line) for line in path.read_text().splitlines()]
             self.assertEqual(len(rows),2)
 
-    def test_exclusive_run_lock_blocks_overlapping_owner(self):
+    @unittest.skipIf(HAS_FCNTL,'unsupported-platform behavior is only active without fcntl')
+    def test_exclusive_run_lock_fails_closed_without_fcntl(self):
+        old_out=xf.OUT
+        with tempfile.TemporaryDirectory() as td:
+            xf.OUT=Path(td)
+            try:
+                with self.assertRaises(SystemExit) as ctx:
+                    with xf.exclusive_run_lock('windows'):
+                        pass
+                self.assertIn('unsupported platform',str(ctx.exception))
+            finally:
+                xf.OUT=old_out
+
+    @unittest.skipUnless(HAS_FCNTL,'requires POSIX fcntl.flock')
+    def test_exclusive_run_lock_blocks_second_process_and_persists_path(self):
         old_out=xf.OUT
         with tempfile.TemporaryDirectory() as td:
             xf.OUT=Path(td)
             lock_path=xf.OUT/'run.lock'
             try:
-                with xf.exclusive_run_lock('first') as metadata:
+                with xf.exclusive_run_lock('first'):
                     self.assertTrue(lock_path.exists())
-                    self.assertEqual(metadata['owner'],'first')
-                    with self.assertRaises(SystemExit) as ctx:
-                        with xf.exclusive_run_lock('second'):
-                            pass
-                    self.assertIn('exclusive run lock already held',str(ctx.exception))
-                self.assertFalse(lock_path.exists())
-                with xf.exclusive_run_lock('second') as metadata:
-                    self.assertEqual(metadata['owner'],'second')
+                    blocked=run_lock_child(xf.OUT,'try')
+                    self.assertNotEqual(blocked.returncode,0)
+                    self.assertIn('exclusive run lock already held',blocked.stdout+blocked.stderr)
+                self.assertTrue(lock_path.exists())
+                entered=run_lock_child(xf.OUT,'try')
+                self.assertEqual(entered.returncode,0,entered.stdout+entered.stderr)
+                self.assertIn('entered',entered.stdout)
             finally:
                 xf.OUT=old_out
+
+    @unittest.skipUnless(HAS_FCNTL,'requires POSIX fcntl.flock')
+    def test_exclusive_run_lock_releases_after_normal_return_and_exception(self):
+        old_out=xf.OUT
+        with tempfile.TemporaryDirectory() as td:
+            xf.OUT=Path(td)
+            try:
+                with xf.exclusive_run_lock('normal'):
+                    pass
+                entered=run_lock_child(xf.OUT,'try')
+                self.assertEqual(entered.returncode,0,entered.stdout+entered.stderr)
+                with self.assertRaises(RuntimeError):
+                    with xf.exclusive_run_lock('exception'):
+                        raise RuntimeError('forced')
+                entered=run_lock_child(xf.OUT,'try')
+                self.assertEqual(entered.returncode,0,entered.stdout+entered.stderr)
+            finally:
+                xf.OUT=old_out
+
+    @unittest.skipUnless(HAS_FCNTL,'requires POSIX fcntl.flock')
+    def test_exclusive_run_lock_releases_after_abrupt_child_death(self):
+        with tempfile.TemporaryDirectory() as td:
+            out=Path(td)
+            died=run_lock_child(out,'die')
+            self.assertEqual(died.returncode,17,died.stdout+died.stderr)
+            self.assertTrue((out/'run.lock').exists())
+            entered=run_lock_child(out,'try')
+            self.assertEqual(entered.returncode,0,entered.stdout+entered.stderr)
+            self.assertIn('entered',entered.stdout)
 
 class IdentityTests(unittest.TestCase):
     def test_decision_evidence_rejects_missing_request_start(self):

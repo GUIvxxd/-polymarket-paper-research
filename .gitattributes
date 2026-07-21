@@ -1,0 +1,7 @@
+/config/xtracker_forward_validation_v4.json text eol=lf
+/config/xtracker_forward_validation_v4.lock.json text eol=lf
+/xtracker_forward_capture.py text eol=lf
+/xtracker_forward_engine_v4.py text eol=lf
+/xtracker_forward_monitor_v4.py text eol=lf
+/xtracker_tweet_depth_check.py text eol=lf
+/xtracker_tweet_watchdog.py text eol=lf

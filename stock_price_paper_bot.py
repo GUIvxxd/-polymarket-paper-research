@@ -60,6 +60,16 @@ LEGACY_PNL_VALIDITY = {
 }
 
 
+def legacy_pnl_view(row: dict[str, Any]) -> dict[str, Any]:
+    """Return a report/export view without mutating persisted legacy rows."""
+    view = dict(row)
+    view["execution_valid_pnl"] = False
+    view["net_capturable"] = False
+    view["paper_pnl_basis"] = LEGACY_PNL_VALIDITY["paper_pnl_basis"]
+    view["pnl_validity_reason"] = "legacy_stock_top_of_book_no_fees_no_latency_no_resolution_proof"
+    return view
+
+
 def utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -625,11 +635,12 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
         "latest_summary": str(SUMMARY_JSON),
     }
     save_json(STATE, state_out)
+    position_views = [legacy_pnl_view(position) for position in positions]
     strategy_signal_result = strategy_evidence.append_signals(
-        STRATEGY_SIGNALS, strategy_signals_from_positions(positions)
+        STRATEGY_SIGNALS, strategy_signals_from_positions(position_views)
     )
 
-    summary = summarize_positions(positions)
+    summary = summarize_positions(position_views)
     top_watchlist = sorted(
         [r for r in rows if not r.get("actionable")],
         key=lambda r: fnum(r.get("edge")) if fnum(r.get("edge")) is not None else -999,
@@ -662,7 +673,7 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
         "strategy_signal_ingestion": strategy_signal_result,
         "strategy_signal_path": str(STRATEGY_SIGNALS),
         "events": events,
-        "positions": positions,
+        "positions": position_views,
         "top_watchlist": top_watchlist,
     }
     save_json(SUMMARY_JSON, report)
@@ -692,8 +703,8 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
         "net_capturable",
         "pnl_validity_reason",
     ]
-    write_csv(LEDGER_CSV, positions, fields)
-    write_csv(TRADES_CSV, [p for p in positions if p.get("status") == "closed"], fields)
+    write_csv(LEDGER_CSV, position_views, fields)
+    write_csv(TRADES_CSV, [p for p in position_views if p.get("status") == "closed"], fields)
     return report
 
 

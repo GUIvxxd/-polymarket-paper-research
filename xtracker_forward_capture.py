@@ -9,6 +9,7 @@ Historical snapshots are never replayed into this ledger.
 from __future__ import annotations
 
 import csv
+import errno
 import hashlib
 import json
 import math
@@ -80,26 +81,35 @@ def load_json(path: Path, default: Any) -> Any:
 
 @contextmanager
 def exclusive_run_lock(owner: str = 'xtracker_forward') -> Iterator[dict[str,Any]]:
-    """Fail closed when another forward run already owns the mutable state tree."""
+    """Hold a Linux kernel lock around mutable forward state/chains."""
+    try:
+        import fcntl
+    except ImportError as exc:
+        raise SystemExit('exclusive run lock requires Linux/POSIX fcntl; unsupported platform') from exc
     path=OUT/'run.lock'
     path.parent.mkdir(parents=True,exist_ok=True)
     metadata={'schema_version':'exclusive_run_lock_v1','owner':owner,'pid':os.getpid(),'acquired_at':utcnow(),'lock_path':str(path)}
-    flags=os.O_CREAT|os.O_EXCL|os.O_WRONLY
+    handle=None
     try:
-        fd=os.open(str(path),flags)
-    except FileExistsError as exc:
-        existing=load_json(path,{})
-        detail=f" owner={existing.get('owner')} pid={existing.get('pid')} acquired_at={existing.get('acquired_at')}" if existing else ''
-        raise SystemExit(f'exclusive run lock already held: {path}{detail}') from exc
-    try:
-        with os.fdopen(fd,'w',encoding='utf-8') as handle:
-            json.dump(metadata,handle,sort_keys=True); handle.write('\n'); handle.flush(); os.fsync(handle.fileno())
+        fd=os.open(str(path),os.O_RDWR|os.O_CREAT,0o644)
+        handle=os.fdopen(fd,'r+',encoding='utf-8')
+        try:
+            fcntl.flock(handle.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno not in (errno.EACCES,errno.EAGAIN):
+                raise
+            existing=load_json(path,{})
+            detail=f" last_owner={existing.get('owner')} last_pid={existing.get('pid')} last_acquired_at={existing.get('acquired_at')}" if existing else ''
+            raise SystemExit(f'exclusive run lock already held: {path}{detail}') from exc
+        handle.seek(0); handle.truncate()
+        json.dump(metadata,handle,sort_keys=True); handle.write('\n'); handle.flush(); os.fsync(handle.fileno())
         yield metadata
     finally:
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
+        if handle is not None:
+            try:
+                fcntl.flock(handle.fileno(),fcntl.LOCK_UN)
+            finally:
+                handle.close()
 
 
 def append_chain(path: Path, record: dict[str,Any], state: dict[str,Any], chain_name: str) -> dict[str,Any]:

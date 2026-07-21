@@ -21,7 +21,7 @@
     "completed_independent_clusters": 100,
     "whichever_first": true
   },
-  "forward_capture_sha256": "4acfd2fc8a6524e8a836a4b9bb59e8b128180953bfb1429d38a7e11d834e8c31",
+  "forward_capture_sha256": "7b73ab9c2714cf6dbe0f14dd756ffe9c2f115feba84dbc31a8cb03e461efa2ab",
   "frozen_decision_rule_hashes": {
     "/data/workspace/polymarket-research/xtracker_paper_rebalance_ledger.py": "3550584f16a10dd27b5066f5bea3a79963673c9099ec92f92aa979b04b1fd227",
     "/data/workspace/polymarket-research/xtracker_tweet_watchdog.py": "24635ed1cd97cae42a97cb5239a2e205182c6078e96122f243048e2761a1578a"
@@ -30,12 +30,12 @@
   "frozen_strategy_manifest_sha256": "4935ef0f710cf33d0217ae7d103015224d8cfd34b70624bce3d7512237c0887f",
   "historical_rows_count": false,
   "live_orders_allowed": false,
-  "lock_sha256": "65acc2cd33e48fe17bf18261ff0edb3da946ab91970fe4de33a9b5dedbbfc495",
+  "lock_sha256": "6daadee95492e6b1cbedfe11af1f4ceaa209222ede21d858883d1e66c084442d",
   "locked_source_sha256": {
     "/data/scripts/xtracker_tweet_watchdog.sh": "a8830f6f4851fa82e1aaadb04bd4851d55232357b55f6ebc342ffea905acb2ec",
     "/data/workspace/polymarket-research/config/xtracker_forward_validation_v4.json": "2677b7507f34cec1779aaed9b8e66d69e713719771eea75dc02581f82b29c7a4",
-    "/data/workspace/polymarket-research/xtracker_forward_capture.py": "4acfd2fc8a6524e8a836a4b9bb59e8b128180953bfb1429d38a7e11d834e8c31",
-    "/data/workspace/polymarket-research/xtracker_forward_engine_v4.py": "bf422740269d667d9d4ebad2273d09c9260afe05b76e13babec510b56168923d",
+    "/data/workspace/polymarket-research/xtracker_forward_capture.py": "7b73ab9c2714cf6dbe0f14dd756ffe9c2f115feba84dbc31a8cb03e461efa2ab",
+    "/data/workspace/polymarket-research/xtracker_forward_engine_v4.py": "f8b897cad8abb7cd6e8cc8d3ea83440dcaf08bb3d559da4859b4d17e3e4efe8e",
     "/data/workspace/polymarket-research/xtracker_forward_monitor_v4.py": "0675976d22cd08948e746c458072cd58f442a2dec6b5da85447b84c94ae0e084",
     "/data/workspace/polymarket-research/xtracker_tweet_depth_check.py": "318075e9abbf79ecac854d16aa841e3f632f17e7485c0390cdf3f371e50ffa22",
     "/data/workspace/polymarket-research/xtracker_tweet_watchdog.py": "24635ed1cd97cae42a97cb5239a2e205182c6078e96122f243048e2761a1578a"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -169,6 +170,28 @@ class StockDecisionEvidenceTests(unittest.TestCase):
         self.assertFalse(summary["execution_valid_pnl"])
         self.assertFalse(summary["net_capturable"])
 
+    def test_stock_legacy_reporting_view_defaults_missing_validity_false(self) -> None:
+        raw = {"id": 9, "status": "closed", "paper_pnl": 12.5}
+        view = stockbot.legacy_pnl_view(raw)
+        self.assertNotIn("execution_valid_pnl", raw)
+        self.assertNotIn("net_capturable", raw)
+        self.assertFalse(view["execution_valid_pnl"])
+        self.assertFalse(view["net_capturable"])
+        claimed_valid = stockbot.legacy_pnl_view({**raw, "execution_valid_pnl": True, "net_capturable": True})
+        self.assertFalse(claimed_valid["execution_valid_pnl"])
+        self.assertFalse(claimed_valid["net_capturable"])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy.csv"
+            stockbot.write_csv(
+                path,
+                [view],
+                ["id", "paper_pnl", "execution_valid_pnl", "net_capturable"],
+            )
+            with path.open(newline="", encoding="utf-8") as handle:
+                exported = next(csv.DictReader(handle))
+        self.assertEqual(exported["execution_valid_pnl"], "False")
+        self.assertEqual(exported["net_capturable"], "False")
+
 
 class LifecycleAccountingTests(unittest.TestCase):
     def fixture(self) -> tuple[list[dict], list[xledger.ClosedTrade], list[xledger.Position]]:
@@ -271,6 +294,29 @@ class LifecycleAccountingTests(unittest.TestCase):
         self.assertIn("average_loser", summary)
         self.assertIn("profit_factor", summary)
         self.assertIn("median_paper_pnl", summary)
+
+    def test_x_legacy_reporting_view_defaults_missing_validity_false(self) -> None:
+        raw = {
+            "type": "EXIT",
+            "position_id": 7,
+            "event": "Event A",
+            "handle": "acct",
+            "bucket": "0-9",
+            "exit_time": "2026-07-18T01:00:00Z",
+            "exit_price": 0.15,
+            "paper_pnl": 5.0,
+        }
+        view = xledger.legacy_pnl_view(raw)
+        self.assertNotIn("execution_valid_pnl", raw)
+        self.assertNotIn("net_capturable", raw)
+        self.assertFalse(view["execution_valid_pnl"])
+        self.assertFalse(view["net_capturable"])
+        claimed_valid = xledger.legacy_pnl_view({**raw, "execution_valid_pnl": True, "net_capturable": True})
+        self.assertFalse(claimed_valid["execution_valid_pnl"])
+        self.assertFalse(claimed_valid["net_capturable"])
+        signal = xledger.strategy_signals_from_ledger([raw])[0]
+        self.assertFalse(signal["raw"]["metadata"]["execution_valid_pnl"])
+        self.assertFalse(signal["raw"]["metadata"]["net_capturable"])
 
 
 if __name__ == "__main__":

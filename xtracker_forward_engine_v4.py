@@ -37,6 +37,14 @@ def enrich_open_positions(core):
             pos.setdefault('lifecycle_realized_stressed_net_pnl_usd',0.0)
     core.atomic_json(core.STATE,state)
 
+def run_locked_sequence(core, monitor_loader, enrich=enrich_open_positions):
+    with core.exclusive_run_lock('xtracker_forward_engine_v4'):
+        rc=core.main()
+        if rc: return rc
+        enrich(core)
+        monitor=monitor_loader()
+        return monitor.main(core)
+
 def main():
     core=configure(load(ROOT/'xtracker_forward_capture.py','xtracker_forward_core_v4'))
     if core.LOCK.exists():
@@ -48,11 +56,6 @@ def main():
             if not path.is_file() or core.sha_file(path)!=digest: raise SystemExit(f'locked source hash mismatch: {path}')
         if core.sha_file(Path(lock['frozen_strategy_manifest_path']))!=lock['frozen_strategy_manifest_sha256']:
             raise SystemExit('frozen strategy manifest hash mismatch')
-    with core.exclusive_run_lock('xtracker_forward_engine_v4'):
-        rc=core.main()
-        if rc: return rc
-        enrich_open_positions(core)
-        monitor=load(ROOT/'xtracker_forward_monitor_v4.py','xtracker_forward_monitor_v4')
-        return monitor.main(core)
+    return run_locked_sequence(core,lambda:load(ROOT/'xtracker_forward_monitor_v4.py','xtracker_forward_monitor_v4'))
 
 if __name__=='__main__': raise SystemExit(main())

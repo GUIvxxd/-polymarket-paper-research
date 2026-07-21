@@ -79,6 +79,16 @@ LEGACY_PNL_VALIDITY = {
     ],
 }
 
+
+def legacy_pnl_view(row: dict[str, Any]) -> dict[str, Any]:
+    """Return a report/export view without mutating historical evidence rows."""
+    view = dict(row)
+    view["execution_valid_pnl"] = False
+    view["net_capturable"] = False
+    view["paper_pnl_basis"] = LEGACY_PNL_VALIDITY["paper_pnl_basis"]
+    view["pnl_validity_reason"] = "legacy_xtracker_sparse_snapshot_top_of_book_zero_fee_no_latency"
+    return view
+
 MONTHS = {
     "January": 1,
     "February": 2,
@@ -777,7 +787,8 @@ def reconcile_lifecycles(
 
 def strategy_signals_from_ledger(ledger: list[dict[str, Any]]) -> list[dict[str, Any]]:
     signals: list[dict[str, Any]] = []
-    for row in ledger:
+    for raw_row in ledger:
+        row = legacy_pnl_view(raw_row)
         row_type = str(row.get("type") or "").upper()
         if row_type not in {"ENTRY", "EXIT"}:
             continue
@@ -964,6 +975,9 @@ def maybe_write_xlsx(payload: dict[str, Any], ledger_rows: list[dict[str, Any]],
         ["win_rate", payload["hold_baseline_summary"]["win_rate"], payload["rebalance_summary"]["win_rate"]],
         ["paper_pnl", payload["hold_baseline_summary"]["paper_pnl"], payload["rebalance_summary"]["paper_pnl"]],
         ["avg_roi", payload["hold_baseline_summary"]["avg_roi"], payload["rebalance_summary"]["avg_roi"]],
+        ["execution_valid_pnl", False, False],
+        ["net_capturable", False, False],
+        ["paper_pnl_basis", LEGACY_PNL_VALIDITY["paper_pnl_basis"], LEGACY_PNL_VALIDITY["paper_pnl_basis"]],
     ]
     for row in summary_rows:
         ws.append(row)
@@ -1000,14 +1014,14 @@ def main() -> int:
     ledger, rebalance_trades, open_positions = simulate_rebalance(records, final_counts)
     baseline_trades = simulate_hold_baseline(records, final_counts)
 
-    ledger_rows = ledger
-    trade_rows = [asdict(t) for t in rebalance_trades]
-    baseline_rows = [asdict(t) for t in baseline_trades]
-    open_rows = [asdict(p) for p in open_positions]
+    ledger_rows = [legacy_pnl_view(row) for row in ledger]
+    trade_rows = [legacy_pnl_view(asdict(t)) for t in rebalance_trades]
+    baseline_rows = [legacy_pnl_view(asdict(t)) for t in baseline_trades]
+    open_rows = [legacy_pnl_view(asdict(p)) for p in open_positions]
     lifecycle_rows = reconcile_lifecycles(ledger, rebalance_trades, open_positions)
     baseline_by_event = {trade.event: trade for trade in baseline_trades}
     matched_comparison = [
-        {
+        legacy_pnl_view({
             "market_lifecycle_id": row["market_lifecycle_id"],
             "event": row["event"],
             "lifecycle_status": row["status"],
@@ -1019,7 +1033,7 @@ def main() -> int:
                 round(row["fixed_100_share_pnl"] - baseline_by_event[row["event"]].paper_pnl, 6)
                 if row["event"] in baseline_by_event else None
             ),
-        }
+        })
         for row in lifecycle_rows
     ]
     signal_result = strategy_evidence.append_signals(STRATEGY_SIGNALS, strategy_signals_from_ledger(ledger))
@@ -1075,6 +1089,9 @@ def main() -> int:
         "closed_trade_rows": trade_rows,
         "hold_baseline_trade_rows": baseline_rows,
         "lifecycle_accounting": {
+            "execution_valid_pnl": False,
+            "net_capturable": False,
+            "paper_pnl_basis": LEGACY_PNL_VALIDITY["paper_pnl_basis"],
             "lifecycles_total": len(lifecycle_rows),
             "closed_lifecycles": sum(row["status"] == "closed" for row in lifecycle_rows),
             "open_lifecycles": sum(row["status"] == "open" for row in lifecycle_rows),
