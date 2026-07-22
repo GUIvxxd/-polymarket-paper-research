@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -13,6 +16,195 @@ import evidence_report
 import market_state_recorder
 import markout_worker
 import public_record_reaction_bot
+
+
+WATCHDOG_TEMPLATE = Path(__file__).resolve().parent / "deploy" / "scripts" / "event_evidence_pipeline_watchdog.sh"
+
+
+@unittest.skipIf(os.name == "nt", "pipeline wrapper tests require POSIX bash and flock")
+@unittest.skipUnless(shutil.which("bash") and shutil.which("flock"), "bash and flock are required")
+class EventEvidencePipelineWrapperTests(unittest.TestCase):
+    def run_pipeline(
+        self,
+        *,
+        markout_rc: int = 0,
+        report_rc: int = 0,
+        failure_command: str | None = None,
+        failure_rc: int = 1,
+        source_files: dict[str, str] | None = None,
+        hold_lock: bool = False,
+    ) -> tuple[subprocess.CompletedProcess[str], list[str], bool]:
+        with tempfile.TemporaryDirectory() as directory:
+            project_root = Path(directory)
+            (project_root / "reports").mkdir()
+            wrapper = project_root / "event_evidence_pipeline_watchdog.sh"
+            wrapper.write_text(WATCHDOG_TEMPLATE.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
+            for relative_path, content in (source_files or {}).items():
+                source_path = project_root / relative_path
+                source_path.parent.mkdir(parents=True, exist_ok=True)
+                source_path.write_text(content, encoding="utf-8")
+            bin_dir = project_root / "bin"
+            bin_dir.mkdir()
+            fake_python = bin_dir / "python3"
+            fake_python.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' \"$*\" >> \"$PIPELINE_CALL_LOG\"\n"
+                "if [ \"$*\" = \"${FAILURE_COMMAND:-__no_failure__}\" ]; then\n"
+                "  exit \"${FAILURE_RC:-1}\"\n"
+                "fi\n"
+                "if [ \"$1\" = markout_worker.py ]; then exit \"${MARKOUT_RC:-0}\"; fi\n"
+                "if [ \"$1\" = evidence_report.py ]; then exit \"${REPORT_RC:-0}\"; fi\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            fake_python.chmod(0o755)
+            call_log = project_root / "calls.log"
+            env = {
+                **os.environ,
+                "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                "PIPELINE_CALL_LOG": str(call_log),
+                "EVENT_EVIDENCE_PROJECT_ROOT": str(project_root),
+                "MARKOUT_RC": str(markout_rc),
+                "REPORT_RC": str(report_rc),
+                "FAILURE_RC": str(failure_rc),
+            }
+            if failure_command is not None:
+                env["FAILURE_COMMAND"] = failure_command
+
+            holder: subprocess.Popen[str] | None = None
+            if hold_lock:
+                lock_path = project_root / "reports" / ".event_evidence_pipeline.lock"
+                holder = subprocess.Popen(
+                    [
+                        "bash",
+                        "-c",
+                        'exec 8>"$1"; flock -n 8 || exit 99; printf "ready\\n"; read -r _',
+                        "lock-holder",
+                        str(lock_path),
+                    ],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                self.assertIsNotNone(holder.stdout)
+                self.assertEqual(holder.stdout.readline(), "ready\n")
+
+            try:
+                result = subprocess.run(
+                    ["bash", str(wrapper)],
+                    cwd=project_root,
+                    env=env,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+            finally:
+                if holder is not None:
+                    self.assertIsNotNone(holder.stdin)
+                    holder.stdin.write("release\n")
+                    holder.stdin.close()
+                    holder.wait(timeout=5)
+                    self.assertIsNotNone(holder.stdout)
+                    self.assertIsNotNone(holder.stderr)
+                    holder.stdout.close()
+                    holder.stderr.close()
+
+            calls = call_log.read_text(encoding="utf-8").splitlines() if call_log.exists() else []
+            lock_exists = (project_root / "reports" / ".event_evidence_pipeline.lock").exists()
+            return result, calls, lock_exists
+
+    def test_clean_markout_refreshes_report_and_returns_zero(self) -> None:
+        result, calls, lock_exists = self.run_pipeline()
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(
+            calls,
+            ["event_ledger.py", "market_state_recorder.py", "markout_worker.py", "evidence_report.py"],
+        )
+        self.assertTrue(lock_exists)
+
+    def test_terminal_provider_failure_still_refreshes_report(self) -> None:
+        result, calls, lock_exists = self.run_pipeline(markout_rc=2)
+
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(
+            calls,
+            ["event_ledger.py", "market_state_recorder.py", "markout_worker.py", "evidence_report.py"],
+        )
+        self.assertTrue(lock_exists)
+
+    def test_report_failure_overrides_clean_markout_status(self) -> None:
+        result, calls, _lock_exists = self.run_pipeline(markout_rc=0, report_rc=7)
+
+        self.assertEqual(result.returncode, 7)
+        self.assertEqual(calls[-2:], ["markout_worker.py", "evidence_report.py"])
+
+    def test_report_failure_overrides_terminal_provider_status(self) -> None:
+        result, calls, _lock_exists = self.run_pipeline(markout_rc=2, report_rc=7)
+
+        self.assertEqual(result.returncode, 7)
+        self.assertEqual(calls[-2:], ["markout_worker.py", "evidence_report.py"])
+
+    def test_ingestion_and_state_failures_stop_later_stages(self) -> None:
+        cases = [
+            ("event_ledger.py", 4, None, ["event_ledger.py"]),
+            (
+                "event_ledger.py --input reports/xtracker_strategy_decisions.jsonl",
+                5,
+                {"reports/xtracker_strategy_decisions.jsonl": "{}\n"},
+                ["event_ledger.py", "event_ledger.py --input reports/xtracker_strategy_decisions.jsonl"],
+            ),
+            (
+                "market_state_recorder.py",
+                6,
+                None,
+                ["event_ledger.py", "market_state_recorder.py"],
+            ),
+        ]
+        for failure_command, failure_rc, source_files, expected_calls in cases:
+            with self.subTest(failure_command=failure_command):
+                result, calls, _lock_exists = self.run_pipeline(
+                    failure_command=failure_command,
+                    failure_rc=failure_rc,
+                    source_files=source_files,
+                )
+                self.assertEqual(result.returncode, failure_rc)
+                self.assertEqual(calls, expected_calls)
+
+    def test_unexpected_markout_status_fails_closed_without_report(self) -> None:
+        result, calls, _lock_exists = self.run_pipeline(markout_rc=9)
+
+        self.assertEqual(result.returncode, 9)
+        self.assertEqual(calls[-1], "markout_worker.py")
+        self.assertNotIn("evidence_report.py", calls)
+
+    def test_lock_contention_runs_no_pipeline_stage(self) -> None:
+        result, calls, lock_exists = self.run_pipeline(hold_lock=True)
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+        self.assertTrue(lock_exists)
+
+    def test_command_order_and_conditional_source_ingestion(self) -> None:
+        result, calls, _lock_exists = self.run_pipeline(
+            source_files={
+                "reports/xtracker_strategy_decisions.jsonl": "{}\n",
+                "reports/stock_price_strategy_decisions.jsonl": "",
+            }
+        )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(
+            calls,
+            [
+                "event_ledger.py",
+                "event_ledger.py --input reports/xtracker_strategy_decisions.jsonl",
+                "market_state_recorder.py",
+                "markout_worker.py",
+                "evidence_report.py",
+            ],
+        )
 
 
 class EventLedgerTests(unittest.TestCase):

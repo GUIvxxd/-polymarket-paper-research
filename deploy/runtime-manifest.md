@@ -88,6 +88,19 @@ python3 evidence_report.py
 
 The two `--input` calls run only when their source JSONL files are non-empty.
 
+The wrapper holds the same non-blocking exclusive lock file descriptor for the
+entire pipeline and leaves the persistent lock file in place. Ingestion and
+market-state failures stop the pipeline immediately. Markout exit `0` is clean;
+exit `2` means terminal provider-unavailable records were written. Both statuses
+run the evidence report, and a successful report preserves the original markout
+status. A report failure overrides either status with its own nonzero exit.
+Unexpected markout statuses fail closed with the original status and skip report
+generation.
+
+Behavioral tests may set `EVENT_EVIDENCE_PROJECT_ROOT` to an isolated copied
+project root. The variable is unset in production, so the default remains
+`/data/workspace/polymarket-research`; the production command order is unchanged.
+
 ## Non-recurring collector commands
 
 The both-sides collector is not currently scheduled. Its last supervised qualification used external host helpers:
