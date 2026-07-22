@@ -4,9 +4,13 @@ import hashlib
 import importlib.util
 import json
 import unittest
+from copy import deepcopy
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterator
+
+import xtracker_forward_provenance as provenance
+import verify_xtracker_forward_v4 as v4_verifier
 
 
 ROOT = Path(__file__).resolve().parent
@@ -33,6 +37,134 @@ def locked_source_in_checkout(raw_path: str) -> Path | None:
 core = load(ROOT / "xtracker_forward_capture.py", "v4_core_test")
 monitor = load(ROOT / "xtracker_forward_monitor_v4.py", "v4_monitor_test")
 engine = load(ROOT / "xtracker_forward_engine_v4.py", "v4_engine_test")
+
+
+ACTIVE_LOCK = {
+    "protocol_id": "xtracker_forward_v4_20260720",
+    "protocol_sha256": "2677b7507f34cec1779aaed9b8e66d69e713719771eea75dc02581f82b29c7a4",
+    "lock_sha256": "6daadee95492e6b1cbedfe11af1f4ceaa209222ede21d858883d1e66c084442d",
+    "activation_utc": "2026-07-20T15:50:54.234Z",
+}
+ORIGINAL_LOCK_SHA = "497bee78a3eeeb994747014299db2959d612a6a29f9473a59e6e714e4f438ef7"
+
+
+def seal_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    sealed = []
+    previous_hash = "0" * 64
+    for sequence, row in enumerate(rows, 1):
+        body = {**row, "sequence": sequence, "previous_hash": previous_hash}
+        record_hash = provenance.sha_bytes(previous_hash.encode() + provenance.canonical(body))
+        sealed_row = {**body, "record_hash": record_hash}
+        sealed.append(sealed_row)
+        previous_hash = record_hash
+    return sealed
+
+
+def current_provenance_fixture() -> dict[str, Any]:
+    identity = provenance.active_identity(ACTIVE_LOCK)
+    registry = seal_rows([
+        provenance.bind_identity(
+            {
+                "record_type": "OPPORTUNITY_REGISTERED",
+                "opportunity_id": "opp-1",
+                "lifecycle_id": "life-1",
+                "decision_time": "2026-07-22T12:00:00Z",
+                "paper_only": True,
+                "live_order_submitted": False,
+            },
+            identity,
+        )
+    ])
+    registry_hash = registry[0]["record_hash"]
+    entry = provenance.bind_identity(
+        {
+            "record_type": "ARM_ENTRY_EVALUATION",
+            "opportunity_id": "opp-1",
+            "registry_record_hash": registry_hash,
+            "lifecycle_id": "life-1",
+            "arm": "baseline",
+            "decision": "PAPER_ENTRY",
+            "execution": {"complete": True},
+            "execution_evidence_eligible": True,
+            "paper_only": True,
+            "live_order_submitted": False,
+        },
+        identity,
+    )
+    entry = seal_rows([entry])[0]
+    completion = provenance.bind_identity(
+        {
+            "record_type": "ARM_SETTLEMENT",
+            "opportunity_id": "opp-1",
+            "registry_record_hash": registry_hash,
+            "entry_record_hash": entry["record_hash"],
+            "lifecycle_id": "life-1",
+            "arm": "baseline",
+            "execution_evidence_eligible": True,
+            "paper_only": True,
+            "live_order_submitted": False,
+        },
+        identity,
+    )
+    events = seal_rows([
+        {key: value for key, value in entry.items() if key not in {"sequence", "previous_hash", "record_hash"}},
+        completion,
+    ])
+    completion_hash = events[1]["record_hash"]
+    completed_projection = provenance.bind_identity(
+        {
+            "opportunity_id": "opp-1",
+            "registry_record_hash": registry_hash,
+            "entry_record_hash": events[0]["record_hash"],
+            "completion_record_hash": completion_hash,
+        },
+        identity,
+    )
+    state = provenance.bind_identity(
+        {
+            "seen_opportunities": {"opp-1": provenance.bind_identity(
+                {"registry_record_hash": registry_hash}, identity
+            )},
+            "open_positions": {arm: {} for arm in provenance.ARMS},
+            "completed_clusters": {
+                **{arm: {} for arm in provenance.ARMS},
+                "baseline": {"life-1": completed_projection},
+            },
+        },
+        identity,
+    )
+    status = provenance.bind_identity(
+        {
+            "paper_only": True,
+            "live_orders": 0,
+            "wallet_or_authentication_used": False,
+            "registered_opportunities": 1,
+            "executable_completed_clusters_by_arm": {
+                **{arm: 0 for arm in provenance.ARMS}, "baseline": 1,
+            },
+            "net_capturable_completed_clusters_by_arm": {
+                **{arm: 0 for arm in provenance.ARMS}, "baseline": 1,
+            },
+            "promotion_gate_passed": False,
+            "aggregate_pnl_hidden_until_fixed_end": True,
+        },
+        identity,
+    )
+    ledger = [{
+        **identity,
+        "experiment_identity_sha256": provenance.identity_binding_sha256(identity),
+        "opportunity_id": "opp-1",
+        "opportunity_sequence": "1",
+        "registry_record_hash": registry_hash,
+    }]
+    return {
+        "lock": dict(ACTIVE_LOCK),
+        "registry": registry,
+        "ledger": ledger,
+        "events": events,
+        "state": state,
+        "status": status,
+    }
 
 
 class FrozenRuleTests(unittest.TestCase):
@@ -158,6 +290,109 @@ class ProtocolTests(unittest.TestCase):
         }
         for path, digest in expected.items():
             self.assertEqual(registered[path], digest, path)
+
+
+class VerifierProvenanceTests(unittest.TestCase):
+    def assert_has_error(self, errors: list[str], fragment: str) -> None:
+        self.assertTrue(any(fragment in error for error in errors), errors)
+
+    def test_confirmed_mixed_33_old_6_current_ledger_fails(self) -> None:
+        identity = provenance.active_identity(ACTIVE_LOCK)
+        rows = []
+        for sequence in range(1, 40):
+            row = {
+                **identity,
+                "baseline_lock_sha256": ORIGINAL_LOCK_SHA if sequence <= 33 else identity["baseline_lock_sha256"],
+            }
+            rows.append(row)
+
+        errors = provenance.verify_identity_rows(rows, identity, "ledger")
+
+        mismatches = [error for error in errors if "baseline_lock_sha256:mismatch" in error]
+        self.assertEqual(len(mismatches), 33)
+
+    def test_single_mismatched_or_missing_lock_field_fails(self) -> None:
+        identity = provenance.active_identity(ACTIVE_LOCK)
+        mismatched = {**identity, "baseline_lock_sha256": ORIGINAL_LOCK_SHA}
+        missing = dict(identity)
+        del missing["baseline_lock_sha256"]
+
+        self.assert_has_error(
+            provenance.verify_identity_rows([mismatched], identity, "ledger"),
+            "baseline_lock_sha256:mismatch",
+        )
+        self.assert_has_error(
+            provenance.verify_identity_rows([missing], identity, "ledger"),
+            "baseline_lock_sha256:missing",
+        )
+
+    def test_mismatched_protocol_sha_or_id_fails(self) -> None:
+        identity = provenance.active_identity(ACTIVE_LOCK)
+        wrong_sha = {**identity, "protocol_sha256": "f" * 64}
+        wrong_id = {**identity, "protocol_id": "xtracker_forward_v4_foreign"}
+
+        self.assert_has_error(
+            provenance.verify_identity_rows([wrong_sha], identity, "ledger"),
+            "protocol_sha256:mismatch",
+        )
+        self.assert_has_error(
+            provenance.verify_identity_rows([wrong_id], identity, "ledger"),
+            "protocol_id:mismatch",
+        )
+
+    def test_all_current_identity_and_exact_linkage_pass(self) -> None:
+        fixture = current_provenance_fixture()
+        errors = v4_verifier.verify_provenance_records(**fixture)
+        self.assertEqual(errors, [])
+
+    def test_completion_from_foreign_lock_cannot_count(self) -> None:
+        fixture = current_provenance_fixture()
+        foreign_identity = {
+            **provenance.active_identity(ACTIVE_LOCK),
+            "baseline_lock_sha256": ORIGINAL_LOCK_SHA,
+        }
+        completion = fixture["events"][1]
+        completion.update(foreign_identity)
+        completion["experiment_identity_sha256"] = provenance.identity_binding_sha256(foreign_identity)
+
+        errors = v4_verifier.verify_provenance_records(**fixture)
+
+        self.assert_has_error(errors, "events[1]:baseline_lock_sha256:mismatch")
+
+    def test_ambiguous_lifecycle_only_completion_fails_closed(self) -> None:
+        fixture = current_provenance_fixture()
+        fixture["events"][1].pop("entry_record_hash")
+        fixture["state"]["completed_clusters"]["baseline"]["life-1"].pop("entry_record_hash")
+        duplicate_entry = {
+            key: value for key, value in fixture["events"][0].items()
+            if key not in {"sequence", "previous_hash", "record_hash"}
+        }
+        fixture["events"] = seal_rows([duplicate_entry, duplicate_entry, {
+            key: value for key, value in fixture["events"][1].items()
+            if key not in {"sequence", "previous_hash", "record_hash"}
+        }])
+
+        errors = v4_verifier.verify_provenance_records(**fixture)
+
+        self.assert_has_error(errors, "entry_record_hash:missing")
+
+    def test_foreign_completed_state_projection_fails_closed(self) -> None:
+        fixture = current_provenance_fixture()
+        projection = fixture["state"]["completed_clusters"]["baseline"]["life-1"]
+        projection["baseline_lock_sha256"] = ORIGINAL_LOCK_SHA
+
+        errors = v4_verifier.verify_provenance_records(**fixture)
+
+        self.assert_has_error(errors, "state.completed[baseline][life-1][0]:baseline_lock_sha256:mismatch")
+
+    def test_pure_verification_does_not_write_audit_files(self) -> None:
+        fixture = current_provenance_fixture()
+        before = set(ROOT.glob("audit_latest.*"))
+
+        result = v4_verifier.audit_records(**fixture, verified_at="2026-07-22T12:30:00Z")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(set(ROOT.glob("audit_latest.*")), before)
 
 
 class SafetyTests(unittest.TestCase):

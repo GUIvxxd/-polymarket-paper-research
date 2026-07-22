@@ -1,0 +1,107 @@
+{
+  "schema_version": "xtracker_forward_validation_protocol_v5_template",
+  "status": "REQUIRES_EXPLICIT_FUTURE_ACTIVATION",
+  "paper_only": true,
+  "live_orders_allowed": false,
+  "wallet_or_authentication_allowed": false,
+  "excluded_samples": {
+    "historical_v2_replay": "forensic only; zero strict causal round trips",
+    "v3_pilot": "zero promotion credit because exit constants were mistranscribed and exit/settlement code was not locked",
+    "v4_mixed_version": "forensic only; multiple implementation lock identities share one activation and receive zero v5 promotion credit"
+  },
+  "baseline": {
+    "entry": "exact frozen consensus_v3_2026_07_16 selected candidates after strongest-bucket and event-lock processing",
+    "initial_quantity_shares": 100,
+    "paper_order_type": "FOK full-depth walk",
+    "exit_rules_exactly_from_frozen_source": {
+      "minimum_absolute_profit_per_share": 0.03,
+      "minimum_relative_profit": 0.20,
+      "fair_collapse_threshold": 0.20,
+      "stale_bid_edge": 0.10,
+      "better_bucket_edge_delta": 0.10,
+      "rebalance_minimum_edge": 0.50,
+      "rebalance_minimum_fair": 0.70,
+      "rebalance_maximum_ask": 0.25,
+      "bucket_switch_requires_bid_at_or_above_entry": true
+    },
+    "monitoring_cadence": "the existing sequential five-minute watchdog run",
+    "historical_relabeling": false,
+    "substantive_changes_during_window": false
+  },
+  "registered_candidate_arms": [
+    {
+      "id": "entry_limit_025",
+      "single_change": "reject unless post-latency full-quantity ask VWAP and marginal ask are at most 0.25"
+    },
+    {
+      "id": "event_risk_cap_10usd",
+      "single_change": "greatest whole-share FOK quantity not above baseline quantity whose entry cost plus explicit fee plus one adverse tick per share is at most 10 USD and meets minimum order size"
+    },
+    {
+      "id": "early_drawdown_exit_25pct",
+      "single_change": "add an exit at the first five-minute monitor decision whose full-position bid VWAP is at most 75 percent of entry VWAP; execute from a separate post-latency sell book and retain unfilled residual inventory"
+    }
+  ],
+  "activation_and_stopping": {
+    "forward_start": "activation_utc in the generated v5 lock",
+    "all_earlier_rows_excluded": true,
+    "fixed_end": "first of 100 completed registered independent clusters or 180 days",
+    "minimum_executable_net_capturable_completed_clusters_per_arm": 30,
+    "analysis_time": "fixed end only",
+    "interim_visibility": "counts, process health and evidence failures only; no PnL comparison, ranking, parameter changes, optional stopping or promotion"
+  },
+  "universe_and_independence": {
+    "registry": "every row in every sequential v3 depth run, including selected, rejected, missing-book, no-trade, unresolved and settled rows",
+    "candidate_and_baseline_universe_identical": true,
+    "candidate_rejections": "retained as zero-PnL paired outcomes",
+    "lifecycle": "all mutually exclusive buckets and rebalances for one dated event",
+    "cluster": "same account plus overlapping market-resolution or open-exposure windows; final deterministic clustering may merge provisional lifecycle IDs",
+    "primary_unit": "independent cluster, never leg, arm, snapshot or position"
+  },
+  "causal_execution": {
+    "decision_books": "raw public CLOB payloads with endpoint, HTTP status, request start, response receipt, provider timestamp, market and asset identity and SHA-256",
+    "paper_latency_ms": "maximum of 500, measured decision-book RTT and documented taker delay",
+    "fill_book": "first separate public request beginning no earlier than decision completion plus paper latency",
+    "maximum_rtt_ms": 2000,
+    "maximum_provider_staleness_ms": 2000,
+    "entry": "FOK; insufficient full depth is no trade",
+    "exit": "walk bid depth; partial executable exits are booked and residual inventory remains open",
+    "fees": "archive clob-markets condition metadata plus fee-rate token response; require tbf/base_fee agreement, fd.e=1, fd.to=true and explicit fd.r; fee per level is shares times fd.r times price times one-minus-price rounded to five decimals",
+    "stress": "two adverse ticks on each filled share",
+    "settlement": "archive and hash the proof artifact; require event identity, final count and bucket mapping; unresolved or ambiguous settlement remains open/evidence-failed"
+  },
+  "failure_accounting": {
+    "retain_in_denominator": true,
+    "maximum_cluster_failure_rate": 0.05,
+    "primary_sensitivity": "post-signal failures receive negative planned worst-case event risk",
+    "complete_case_only_never_promotes": true
+  },
+  "statistics_and_promotion": {
+    "primary_estimand": "mean net PnL per registered independent cluster",
+    "paired_estimand": "candidate minus baseline net PnL on the identical universe",
+    "tests": "absolute and paired one-sided tests for all three candidates; Holm correction over six tests",
+    "confidence": "50000-resample cluster bootstrap, seed 20260720, one-sided Holm-adjusted 95 percent lower bounds",
+    "required": [
+      "at least 30 executable completed independent clusters per arm",
+      "at least 30 net-capturable completed independent clusters per arm",
+      "positive aggregate net PnL and mean cluster expectancy",
+      "positive paired uplift with adjusted lower bound above zero",
+      "absolute adjusted lower bound above zero",
+      "net return on committed risk at least 0.02 per cluster",
+      "positive expectancy under two-adverse-tick stress",
+      "evidence failure rate at most 0.05",
+      "cash, fee, residual inventory and settlement reconciliation"
+    ],
+    "public_record_pipeline": "separate; its current zero net-capturable markouts receive no X-strategy credit",
+    "live_transition": "never authorized here; remain paper-only after any statistical pass until separate explicit authorization and safety review"
+  },
+  "locked_implementation": [
+    "xtracker_forward_capture.py unchanged hardened entry/registry core",
+    "xtracker_forward_engine_v5.py version/path and provenance adapter",
+    "xtracker_forward_monitor_v4.py unchanged hardened monitor economics",
+    "xtracker_forward_v5.py activation and runtime provenance binding",
+    "xtracker_tweet_depth_check.py unchanged decision evidence instrumentation",
+    "xtracker_tweet_watchdog.py unchanged source decisions"
+  ],
+  "amendments": "any substantive change creates v6 and resets the forward sample"
+}

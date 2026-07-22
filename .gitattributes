@@ -5,3 +5,9 @@
 /xtracker_forward_monitor_v4.py text eol=lf
 /xtracker_tweet_depth_check.py text eol=lf
 /xtracker_tweet_watchdog.py text eol=lf
+/config/xtracker_forward_validation_v5.template.json text eol=lf
+/verify_xtracker_forward_v4.py text eol=lf
+/verify_xtracker_forward_v5.py text eol=lf
+/xtracker_forward_engine_v5.py text eol=lf
+/xtracker_forward_provenance.py text eol=lf
+/xtracker_forward_v5.py text eol=lf
