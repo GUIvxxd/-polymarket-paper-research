@@ -19,6 +19,15 @@ import public_record_reaction_bot
 
 
 WATCHDOG_TEMPLATE = Path(__file__).resolve().parent / "deploy" / "scripts" / "event_evidence_pipeline_watchdog.sh"
+FAKE_CONTROL_ENVIRONMENT = (
+    "FAILURE_COMMAND",
+    "FAILURE_RC",
+    "MARKOUT_RC",
+    "REPORT_RC",
+    "PIPELINE_CALL_LOG",
+    "EVENT_EVIDENCE_PROJECT_ROOT",
+    "PIPELINE_FAKE_REPORT_PATH",
+)
 
 
 @unittest.skipIf(os.name == "nt", "pipeline wrapper tests require POSIX bash and flock")
@@ -27,16 +36,18 @@ class EventEvidencePipelineWrapperTests(unittest.TestCase):
     def run_pipeline(
         self,
         *,
-        markout_rc: int = 0,
-        report_rc: int = 0,
+        markout_rc: int | None = None,
+        report_rc: int | None = None,
         failure_command: str | None = None,
-        failure_rc: int = 1,
+        failure_rc: int | None = None,
         source_files: dict[str, str] | None = None,
         hold_lock: bool = False,
-    ) -> tuple[subprocess.CompletedProcess[str], list[str], bool]:
+    ) -> tuple[subprocess.CompletedProcess[str], list[str], bool, bool]:
         with tempfile.TemporaryDirectory() as directory:
             project_root = Path(directory)
             (project_root / "reports").mkdir()
+            report_path = project_root / "reports" / "event_evidence_report_latest.json"
+            report_path.write_text("stale\n", encoding="utf-8")
             wrapper = project_root / "event_evidence_pipeline_watchdog.sh"
             wrapper.write_text(WATCHDOG_TEMPLATE.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
             for relative_path, content in (source_files or {}).items():
@@ -53,23 +64,32 @@ class EventEvidencePipelineWrapperTests(unittest.TestCase):
                 "  exit \"${FAILURE_RC:-1}\"\n"
                 "fi\n"
                 "if [ \"$1\" = markout_worker.py ]; then exit \"${MARKOUT_RC:-0}\"; fi\n"
-                "if [ \"$1\" = evidence_report.py ]; then exit \"${REPORT_RC:-0}\"; fi\n"
+                "if [ \"$1\" = evidence_report.py ]; then\n"
+                "  printf 'refreshed\\n' > \"$PIPELINE_FAKE_REPORT_PATH\"\n"
+                "  exit \"${REPORT_RC:-0}\"\n"
+                "fi\n"
                 "exit 0\n",
                 encoding="utf-8",
             )
             fake_python.chmod(0o755)
             call_log = project_root / "calls.log"
-            env = {
-                **os.environ,
-                "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            env = dict(os.environ)
+            for key in FAKE_CONTROL_ENVIRONMENT:
+                env.pop(key, None)
+            env.update({
+                "PATH": f"{bin_dir}{os.pathsep}{env.get('PATH', '')}",
                 "PIPELINE_CALL_LOG": str(call_log),
                 "EVENT_EVIDENCE_PROJECT_ROOT": str(project_root),
-                "MARKOUT_RC": str(markout_rc),
-                "REPORT_RC": str(report_rc),
-                "FAILURE_RC": str(failure_rc),
-            }
+                "PIPELINE_FAKE_REPORT_PATH": str(report_path),
+            })
+            if markout_rc is not None:
+                env["MARKOUT_RC"] = str(markout_rc)
+            if report_rc is not None:
+                env["REPORT_RC"] = str(report_rc)
             if failure_command is not None:
                 env["FAILURE_COMMAND"] = failure_command
+            if failure_rc is not None:
+                env["FAILURE_RC"] = str(failure_rc)
 
             holder: subprocess.Popen[str] | None = None
             if hold_lock:
@@ -112,10 +132,11 @@ class EventEvidencePipelineWrapperTests(unittest.TestCase):
 
             calls = call_log.read_text(encoding="utf-8").splitlines() if call_log.exists() else []
             lock_exists = (project_root / "reports" / ".event_evidence_pipeline.lock").exists()
-            return result, calls, lock_exists
+            report_refreshed = report_path.read_text(encoding="utf-8") == "refreshed\n"
+            return result, calls, lock_exists, report_refreshed
 
     def test_clean_markout_refreshes_report_and_returns_zero(self) -> None:
-        result, calls, lock_exists = self.run_pipeline()
+        result, calls, lock_exists, report_refreshed = self.run_pipeline()
 
         self.assertEqual(result.returncode, 0)
         self.assertEqual(
@@ -123,9 +144,31 @@ class EventEvidencePipelineWrapperTests(unittest.TestCase):
             ["event_ledger.py", "market_state_recorder.py", "markout_worker.py", "evidence_report.py"],
         )
         self.assertTrue(lock_exists)
+        self.assertTrue(report_refreshed)
+
+    def test_hostile_parent_fake_control_environment_is_ignored(self) -> None:
+        hostile_environment = {
+            "FAILURE_COMMAND": "event_ledger.py",
+            "FAILURE_RC": "97",
+            "MARKOUT_RC": "98",
+            "REPORT_RC": "99",
+            "PIPELINE_CALL_LOG": "/tmp/hostile-call-log",
+            "EVENT_EVIDENCE_PROJECT_ROOT": "/tmp/hostile-project-root",
+            "PIPELINE_FAKE_REPORT_PATH": "/tmp/hostile-report-path",
+        }
+        with patch.dict(os.environ, hostile_environment, clear=False):
+            result, calls, lock_exists, report_refreshed = self.run_pipeline()
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(
+            calls,
+            ["event_ledger.py", "market_state_recorder.py", "markout_worker.py", "evidence_report.py"],
+        )
+        self.assertTrue(lock_exists)
+        self.assertTrue(report_refreshed)
 
     def test_terminal_provider_failure_still_refreshes_report(self) -> None:
-        result, calls, lock_exists = self.run_pipeline(markout_rc=2)
+        result, calls, lock_exists, report_refreshed = self.run_pipeline(markout_rc=2)
 
         self.assertEqual(result.returncode, 2)
         self.assertEqual(
@@ -133,15 +176,16 @@ class EventEvidencePipelineWrapperTests(unittest.TestCase):
             ["event_ledger.py", "market_state_recorder.py", "markout_worker.py", "evidence_report.py"],
         )
         self.assertTrue(lock_exists)
+        self.assertTrue(report_refreshed)
 
     def test_report_failure_overrides_clean_markout_status(self) -> None:
-        result, calls, _lock_exists = self.run_pipeline(markout_rc=0, report_rc=7)
+        result, calls, _lock_exists, _report_refreshed = self.run_pipeline(markout_rc=0, report_rc=7)
 
         self.assertEqual(result.returncode, 7)
         self.assertEqual(calls[-2:], ["markout_worker.py", "evidence_report.py"])
 
     def test_report_failure_overrides_terminal_provider_status(self) -> None:
-        result, calls, _lock_exists = self.run_pipeline(markout_rc=2, report_rc=7)
+        result, calls, _lock_exists, _report_refreshed = self.run_pipeline(markout_rc=2, report_rc=7)
 
         self.assertEqual(result.returncode, 7)
         self.assertEqual(calls[-2:], ["markout_worker.py", "evidence_report.py"])
@@ -164,7 +208,7 @@ class EventEvidencePipelineWrapperTests(unittest.TestCase):
         ]
         for failure_command, failure_rc, source_files, expected_calls in cases:
             with self.subTest(failure_command=failure_command):
-                result, calls, _lock_exists = self.run_pipeline(
+                result, calls, _lock_exists, _report_refreshed = self.run_pipeline(
                     failure_command=failure_command,
                     failure_rc=failure_rc,
                     source_files=source_files,
@@ -173,21 +217,23 @@ class EventEvidencePipelineWrapperTests(unittest.TestCase):
                 self.assertEqual(calls, expected_calls)
 
     def test_unexpected_markout_status_fails_closed_without_report(self) -> None:
-        result, calls, _lock_exists = self.run_pipeline(markout_rc=9)
+        result, calls, _lock_exists, report_refreshed = self.run_pipeline(markout_rc=9)
 
         self.assertEqual(result.returncode, 9)
         self.assertEqual(calls[-1], "markout_worker.py")
         self.assertNotIn("evidence_report.py", calls)
+        self.assertFalse(report_refreshed)
 
     def test_lock_contention_runs_no_pipeline_stage(self) -> None:
-        result, calls, lock_exists = self.run_pipeline(hold_lock=True)
+        result, calls, lock_exists, report_refreshed = self.run_pipeline(hold_lock=True)
 
         self.assertEqual(result.returncode, 0)
         self.assertEqual(calls, [])
         self.assertTrue(lock_exists)
+        self.assertFalse(report_refreshed)
 
     def test_command_order_and_conditional_source_ingestion(self) -> None:
-        result, calls, _lock_exists = self.run_pipeline(
+        result, calls, _lock_exists, report_refreshed = self.run_pipeline(
             source_files={
                 "reports/xtracker_strategy_decisions.jsonl": "{}\n",
                 "reports/stock_price_strategy_decisions.jsonl": "",
@@ -205,6 +251,7 @@ class EventEvidencePipelineWrapperTests(unittest.TestCase):
                 "evidence_report.py",
             ],
         )
+        self.assertTrue(report_refreshed)
 
 
 class EventLedgerTests(unittest.TestCase):
