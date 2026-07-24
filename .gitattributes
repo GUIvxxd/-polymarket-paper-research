@@ -5,3 +5,5 @@
 /xtracker_forward_monitor_v4.py text eol=lf
 /xtracker_tweet_depth_check.py text eol=lf
 /xtracker_tweet_watchdog.py text eol=lf
+/test_xtracker_v5_isolation.py text eol=lf
+/xtracker_v5_isolation.py text eol=lf
