@@ -13,7 +13,7 @@ import xtracker_v5_isolation as isolation
 
 SOURCE_ROOT = Path(__file__).resolve().parent
 FOUNDATION_SOURCE = Path("xtracker_v5_isolation.py")
-EXPECTED_FOUNDATION_SHA256 = "0f6a8ba0d191874cce01694b0ed959e05389533cf289718eef93453fb9e0546c"
+EXPECTED_FOUNDATION_SHA256 = "c2778874bdf11a9cae4cf306d96383528b0301d87e8b9b6f5e26e1b2ae19663c"
 
 
 class V5IsolationTests(unittest.TestCase):
@@ -34,6 +34,18 @@ class V5IsolationTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         return path
+
+    def build_two_source_manifest(
+        self,
+    ) -> tuple[tuple[isolation.SourceDigest, ...], tuple[str, str]]:
+        self.write_under_root("src/a.py", b"A = 1\n")
+        self.write_under_root("src/b.py", b"B = 2\n")
+        expected = ("src/a.py", "src/b.py")
+        manifest = isolation.build_source_manifest(
+            self.paths,
+            ["src/b.py", "src/a.py"],
+        )
+        return manifest, expected
 
     def test_path_bundle_requires_explicit_existing_absolute_root(self) -> None:
         with self.assertRaises(TypeError):
@@ -258,38 +270,288 @@ class V5IsolationTests(unittest.TestCase):
                 isolation.SourceIntegrityError,
                 "safe root-local descriptor",
             ):
-                isolation.build_source_manifest(self.paths, [Path(relative_path)])
+                isolation.build_source_manifest(self.paths, [relative_path])
 
         self.assertTrue(swapped)
         self.assertEqual(external.read_bytes(), data)
 
+    def test_exact_nonempty_manifest_accepts_any_input_order(self) -> None:
+        manifest, expected = self.build_two_source_manifest()
+        self.assertEqual(
+            tuple(entry.relative_path for entry in manifest),
+            expected,
+        )
+        isolation.verify_source_manifest(
+            self.paths,
+            tuple(reversed(manifest)),
+            tuple(reversed(expected)),
+        )
+
+    def test_empty_manifest_and_expected_membership_are_rejected(self) -> None:
+        manifest, expected = self.build_two_source_manifest()
+        with self.assertRaisesRegex(isolation.SourceIntegrityError, "empty manifest"):
+            isolation.verify_source_manifest(self.paths, (), expected)
+        with self.assertRaisesRegex(
+            isolation.SourceIntegrityError,
+            "empty expected",
+        ):
+            isolation.verify_source_manifest(self.paths, manifest, ())
+        with self.assertRaisesRegex(
+            isolation.SourceIntegrityError,
+            "empty requested",
+        ):
+            isolation.build_source_manifest(self.paths, ())
+
+    def test_each_truncated_manifest_is_rejected_before_source_read(self) -> None:
+        manifest, expected = self.build_two_source_manifest()
+        for omitted in expected:
+            truncated = tuple(
+                entry for entry in manifest if entry.relative_path != omitted
+            )
+            with self.subTest(omitted=omitted):
+                with mock.patch.object(
+                    isolation,
+                    "_read_canonical_source",
+                    side_effect=AssertionError("source read occurred"),
+                ) as read_source:
+                    with self.assertRaisesRegex(
+                        isolation.SourceIntegrityError,
+                        "missing",
+                    ):
+                        isolation.verify_source_manifest(
+                            self.paths,
+                            truncated,
+                            expected,
+                        )
+                    read_source.assert_not_called()
+
+    def test_unexpected_only_and_mixed_membership_are_rejected(self) -> None:
+        manifest, expected = self.build_two_source_manifest()
+        self.write_under_root("src/unexpected.py", b"UNEXPECTED = 1\n")
+        unexpected = isolation.build_source_manifest(
+            self.paths,
+            ["src/unexpected.py"],
+        )
+        with self.assertRaisesRegex(isolation.SourceIntegrityError, "membership"):
+            isolation.verify_source_manifest(self.paths, unexpected, expected)
+        with self.assertRaisesRegex(isolation.SourceIntegrityError, "unexpected"):
+            isolation.verify_source_manifest(
+                self.paths,
+                manifest + unexpected,
+                expected,
+            )
+
+    def test_duplicate_manifest_and_expected_paths_are_rejected(self) -> None:
+        manifest, expected = self.build_two_source_manifest()
+        with self.assertRaisesRegex(
+            isolation.SourceIntegrityError,
+            "duplicate manifest",
+        ):
+            isolation.verify_source_manifest(
+                self.paths,
+                manifest + (manifest[0],),
+                expected,
+            )
+        with self.assertRaisesRegex(
+            isolation.SourceIntegrityError,
+            "duplicate expected",
+        ):
+            isolation.verify_source_manifest(
+                self.paths,
+                manifest,
+                expected + (expected[0],),
+            )
+        with self.assertRaisesRegex(
+            isolation.SourceIntegrityError,
+            "duplicate requested",
+        ):
+            isolation.build_source_manifest(
+                self.paths,
+                ["src/a.py", "src/a.py"],
+            )
+        with self.assertRaisesRegex(
+            isolation.SourceIntegrityError,
+            "SourceDigest entries",
+        ):
+            isolation.verify_source_manifest(
+                self.paths,
+                {entry.relative_path: entry for entry in manifest},
+                expected,
+            )
+
+    def test_noncanonical_source_paths_are_rejected(self) -> None:
+        unsafe_paths = (
+            "src//a.py",
+            "src/./a.py",
+            "src/a.py/",
+            r"src\a.py",
+            "/src/a.py",
+            "C:/src/a.py",
+            "C:src/a.py",
+            ".",
+            "..",
+            "src/../a.py",
+            "",
+        )
+        for unsafe in unsafe_paths:
+            with self.subTest(unsafe=unsafe, boundary="builder"):
+                with self.assertRaisesRegex(
+                    isolation.SourceIntegrityError,
+                    "canonical",
+                ):
+                    isolation.build_source_manifest(self.paths, [unsafe])
+            with self.subTest(unsafe=unsafe, boundary="expected"):
+                with self.assertRaisesRegex(
+                    isolation.SourceIntegrityError,
+                    "canonical",
+                ):
+                    isolation.verify_source_manifest(self.paths, (), [unsafe])
+            with self.subTest(unsafe=unsafe, boundary="entry"):
+                with self.assertRaisesRegex(
+                    isolation.SourceIntegrityError,
+                    "canonical",
+                ):
+                    isolation.SourceDigest(
+                        relative_path=unsafe,
+                        sha256="0" * 64,
+                        byte_length=0,
+                    )
+
+        with self.assertRaisesRegex(isolation.SourceIntegrityError, "string"):
+            isolation.build_source_manifest(self.paths, [Path("src/a.py")])
+        with self.assertRaisesRegex(isolation.SourceIntegrityError, "string"):
+            isolation.verify_source_manifest(
+                self.paths,
+                (),
+                [Path("src/a.py")],  # type: ignore[list-item]
+            )
+        with self.assertRaisesRegex(isolation.SourceIntegrityError, "string"):
+            isolation.SourceDigest(
+                relative_path=Path("src/a.py"),  # type: ignore[arg-type]
+                sha256="0" * 64,
+                byte_length=0,
+            )
+
+    def test_malformed_digest_and_byte_lengths_are_rejected(self) -> None:
+        for malformed_hash in ("not-a-sha256", "A" * 64, "0" * 63):
+            with self.subTest(sha256=malformed_hash):
+                with self.assertRaisesRegex(
+                    isolation.SourceIntegrityError,
+                    "SHA-256",
+                ):
+                    isolation.SourceDigest(
+                        relative_path="src/a.py",
+                        sha256=malformed_hash,
+                        byte_length=1,
+                    )
+
+        for malformed_length in (-1, True, "1", 1.0):
+            with self.subTest(byte_length=malformed_length):
+                with self.assertRaisesRegex(
+                    isolation.SourceIntegrityError,
+                    "byte length",
+                ):
+                    isolation.SourceDigest(
+                        relative_path="src/a.py",
+                        sha256="0" * 64,
+                        byte_length=malformed_length,  # type: ignore[arg-type]
+                    )
+
+    def test_invalid_membership_shape_precedes_source_reads(self) -> None:
+        manifest, expected = self.build_two_source_manifest()
+        with mock.patch.object(
+            isolation,
+            "_read_canonical_source",
+            side_effect=AssertionError("source read occurred"),
+        ) as read_source:
+            with self.assertRaisesRegex(
+                isolation.SourceIntegrityError,
+                "SourceDigest entries",
+            ):
+                isolation.verify_source_manifest(
+                    self.paths,
+                    ("not-a-digest",),  # type: ignore[arg-type]
+                    expected,
+                )
+            with self.assertRaisesRegex(
+                isolation.SourceIntegrityError,
+                "membership",
+            ):
+                isolation.verify_source_manifest(
+                    self.paths,
+                    manifest[:1],
+                    expected,
+                )
+            read_source.assert_not_called()
+
+    def test_length_and_sha_mismatch_fail_after_membership(self) -> None:
+        data = b"VALUE = 1\n"
+        self.write_under_root("src/value.py", data)
+        expected = ("src/value.py",)
+        length_mismatch = isolation.SourceDigest(
+            relative_path="src/value.py",
+            sha256=hashlib.sha256(data).hexdigest(),
+            byte_length=len(data) + 1,
+        )
+        with self.assertRaisesRegex(isolation.SourceIntegrityError, "byte length"):
+            isolation.verify_source_manifest(
+                self.paths,
+                (length_mismatch,),
+                expected,
+            )
+
+        sha_mismatch = isolation.SourceDigest(
+            relative_path="src/value.py",
+            sha256="0" * 64,
+            byte_length=len(data),
+        )
+        with self.assertRaisesRegex(isolation.SourceIntegrityError, "SHA-256"):
+            isolation.verify_source_manifest(
+                self.paths,
+                (sha_mismatch,),
+                expected,
+            )
+
     def test_source_manifest_hashes_exact_canonical_lf_bytes(self) -> None:
         source = self.write_under_root("src/future_v5_component.py", b"VALUE = 1\n")
         manifest = isolation.build_source_manifest(
-            self.paths, [Path("src/future_v5_component.py")]
+            self.paths,
+            ["src/future_v5_component.py"],
         )
 
         self.assertEqual(
-            manifest["src/future_v5_component.py"].sha256,
+            manifest[0].sha256,
             hashlib.sha256(b"VALUE = 1\n").hexdigest(),
         )
-        isolation.verify_source_manifest(self.paths, manifest)
+        isolation.verify_source_manifest(
+            self.paths,
+            manifest,
+            ["src/future_v5_component.py"],
+        )
 
         source.write_bytes(b"VALUE = 2\n")
         with self.assertRaisesRegex(isolation.SourceIntegrityError, "SHA-256"):
-            isolation.verify_source_manifest(self.paths, manifest)
+            isolation.verify_source_manifest(
+                self.paths,
+                manifest,
+                ["src/future_v5_component.py"],
+            )
 
         source.write_bytes(b"VALUE = 1\r\n")
         with self.assertRaisesRegex(isolation.SourceIntegrityError, "canonical LF"):
             isolation.build_source_manifest(
-                self.paths, [Path("src/future_v5_component.py")]
+                self.paths,
+                ["src/future_v5_component.py"],
             )
 
     def test_missing_and_external_sources_fail_closed(self) -> None:
         with self.assertRaisesRegex(isolation.SourceIntegrityError, "missing"):
-            isolation.build_source_manifest(self.paths, [Path("src/missing.py")])
-        with self.assertRaises(isolation.RootIsolationError):
-            isolation.build_source_manifest(self.paths, [self.outside / "external.py"])
+            isolation.build_source_manifest(self.paths, ["src/missing.py"])
+        with self.assertRaisesRegex(isolation.SourceIntegrityError, "string"):
+            isolation.build_source_manifest(
+                self.paths,
+                [self.outside / "external.py"],
+            )
 
     def test_checked_in_foundation_has_one_canonical_lf_digest(self) -> None:
         data = (SOURCE_ROOT / FOUNDATION_SOURCE).read_bytes()

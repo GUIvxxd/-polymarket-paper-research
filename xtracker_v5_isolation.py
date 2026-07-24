@@ -8,7 +8,7 @@ import re
 import stat
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Iterable, Mapping
+from typing import Iterable
 
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -323,6 +323,107 @@ class SourceDigest:
     sha256: str
     byte_length: int
 
+    def __post_init__(self) -> None:
+        _validate_source_digest(self)
+
+
+def _canonical_source_path(raw_path: object) -> str:
+    if not isinstance(raw_path, str):
+        raise SourceIntegrityError("canonical source path must be a string")
+    if not raw_path or "\\" in raw_path or "\x00" in raw_path:
+        raise SourceIntegrityError(
+            "canonical source path must be a non-empty root-relative POSIX string"
+        )
+    if raw_path.startswith("/"):
+        raise SourceIntegrityError("canonical source path must be root-relative")
+    parts = raw_path.split("/")
+    if (
+        any(part in {"", ".", ".."} for part in parts)
+        or parts[0].endswith(":")
+        or (
+            len(raw_path) >= 2
+            and raw_path[0].isalpha()
+            and raw_path[1] == ":"
+        )
+        or "/".join(parts) != raw_path
+    ):
+        raise SourceIntegrityError(
+            f"source path is not canonical root-relative POSIX: {raw_path}"
+        )
+    return raw_path
+
+
+def _validate_source_digest(entry: SourceDigest) -> None:
+    _canonical_source_path(entry.relative_path)
+    if not isinstance(entry.sha256, str) or not _SHA256_PATTERN.fullmatch(
+        entry.sha256
+    ):
+        raise SourceIntegrityError(
+            f"source digest SHA-256 must be lowercase hexadecimal: "
+            f"{entry.relative_path}"
+        )
+    if type(entry.byte_length) is not int or entry.byte_length < 0:
+        raise SourceIntegrityError(
+            f"source digest byte length must be a nonnegative integer: "
+            f"{entry.relative_path}"
+        )
+
+
+def _validated_source_paths(
+    relative_paths: Iterable[str],
+    *,
+    role: str,
+) -> tuple[str, ...]:
+    if isinstance(relative_paths, (str, bytes)):
+        raise SourceIntegrityError(f"{role} source paths must be an iterable")
+    try:
+        raw_paths = tuple(relative_paths)
+    except TypeError as exc:
+        raise SourceIntegrityError(f"{role} source paths must be an iterable") from exc
+    if not raw_paths:
+        raise SourceIntegrityError(f"empty {role} source membership is not allowed")
+
+    validated: list[str] = []
+    seen: set[str] = set()
+    for raw_path in raw_paths:
+        canonical = _canonical_source_path(raw_path)
+        if canonical in seen:
+            raise SourceIntegrityError(
+                f"duplicate {role} source path: {canonical}"
+            )
+        seen.add(canonical)
+        validated.append(canonical)
+    return tuple(validated)
+
+
+def _validated_manifest_entries(
+    manifest_entries: Iterable[SourceDigest],
+) -> tuple[SourceDigest, ...]:
+    if isinstance(manifest_entries, (str, bytes)):
+        raise SourceIntegrityError("manifest must contain SourceDigest entries")
+    try:
+        entries = tuple(manifest_entries)
+    except TypeError as exc:
+        raise SourceIntegrityError(
+            "manifest must contain SourceDigest entries"
+        ) from exc
+    if not entries:
+        raise SourceIntegrityError("empty manifest is not allowed")
+
+    validated: list[SourceDigest] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, SourceDigest):
+            raise SourceIntegrityError("manifest must contain SourceDigest entries")
+        _validate_source_digest(entry)
+        if entry.relative_path in seen:
+            raise SourceIntegrityError(
+                f"duplicate manifest source path: {entry.relative_path}"
+            )
+        seen.add(entry.relative_path)
+        validated.append(entry)
+    return tuple(validated)
+
 
 def _read_canonical_source(paths: V5PathBundle, relative_path: str | Path) -> bytes:
     data = _read_root_local_bytes(
@@ -340,32 +441,51 @@ def _read_canonical_source(paths: V5PathBundle, relative_path: str | Path) -> by
 
 def build_source_manifest(
     paths: V5PathBundle,
-    relative_paths: Iterable[str | Path],
-) -> dict[str, SourceDigest]:
-    manifest: dict[str, SourceDigest] = {}
-    for relative_path in relative_paths:
-        normalized = "/".join(_relative_parts(relative_path))
-        if normalized in manifest:
-            raise SourceIntegrityError(f"duplicate source path: {normalized}")
-        data = _read_canonical_source(paths, normalized)
-        manifest[normalized] = SourceDigest(
-            relative_path=normalized,
-            sha256=hashlib.sha256(data).hexdigest(),
-            byte_length=len(data),
+    relative_paths: Iterable[str],
+) -> tuple[SourceDigest, ...]:
+    requested_paths = _validated_source_paths(relative_paths, role="requested")
+    manifest: list[SourceDigest] = []
+    for relative_path in sorted(requested_paths):
+        data = _read_canonical_source(paths, relative_path)
+        manifest.append(
+            SourceDigest(
+                relative_path=relative_path,
+                sha256=hashlib.sha256(data).hexdigest(),
+                byte_length=len(data),
+            )
         )
-    return dict(sorted(manifest.items()))
+    return tuple(manifest)
 
 
 def verify_source_manifest(
     paths: V5PathBundle,
-    manifest: Mapping[str, SourceDigest],
+    manifest_entries: Iterable[SourceDigest],
+    expected_relative_paths: Iterable[str],
 ) -> None:
-    for relative_path, expected in sorted(manifest.items()):
-        normalized = "/".join(_relative_parts(relative_path))
-        if normalized != expected.relative_path:
-            raise SourceIntegrityError(f"source manifest path mismatch: {relative_path}")
-        data = _read_canonical_source(paths, normalized)
+    expected_paths = _validated_source_paths(
+        expected_relative_paths,
+        role="expected",
+    )
+    entries = _validated_manifest_entries(manifest_entries)
+    expected_set = set(expected_paths)
+    manifest_set = {entry.relative_path for entry in entries}
+    if manifest_set != expected_set:
+        missing = sorted(expected_set - manifest_set)
+        unexpected = sorted(manifest_set - expected_set)
+        details: list[str] = []
+        if missing:
+            details.append(f"missing={missing}")
+        if unexpected:
+            details.append(f"unexpected={unexpected}")
+        raise SourceIntegrityError(
+            "source manifest membership mismatch: " + ", ".join(details)
+        )
+
+    entries_by_path = {entry.relative_path: entry for entry in entries}
+    for relative_path in sorted(expected_set):
+        expected = entries_by_path[relative_path]
+        data = _read_canonical_source(paths, relative_path)
         if len(data) != expected.byte_length:
-            raise SourceIntegrityError(f"source byte length mismatch: {normalized}")
+            raise SourceIntegrityError(f"source byte length mismatch: {relative_path}")
         if hashlib.sha256(data).hexdigest() != expected.sha256:
-            raise SourceIntegrityError(f"source SHA-256 mismatch: {normalized}")
+            raise SourceIntegrityError(f"source SHA-256 mismatch: {relative_path}")
