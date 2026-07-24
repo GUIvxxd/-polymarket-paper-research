@@ -5,6 +5,7 @@ import dataclasses
 import hashlib
 import inspect
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -169,6 +170,32 @@ class V5RuntimeArtifactGatewayTests(unittest.TestCase):
         with self.assertRaises(dataclasses.FrozenInstanceError):
             record.phase = "monitor"  # type: ignore[misc]
         self.assertEqual(record.raw_bytes, data)
+
+    def test_deep_valid_json_freeze_recursion_fails_closed(self) -> None:
+        recursion_limit = 300
+        data = (
+            '{"nested":' * recursion_limit + "{}" + "}" * recursion_limit
+        ).encode("utf-8")
+        reference = self.make_reference(
+            phase="capture",
+            role="forecast_input",
+            data=data,
+            name="deep-valid-object.json",
+            source_type="public_x_record",
+        )
+
+        original_limit = sys.getrecursionlimit()
+        try:
+            sys.setrecursionlimit(recursion_limit)
+            with self.assertRaisesRegex(
+                runtime.RuntimeArtifactIntegrityError,
+                "immutable conversion",
+            ) as caught:
+                self.read_reference("capture", reference)
+        finally:
+            sys.setrecursionlimit(original_limit)
+
+        self.assertIsInstance(caught.exception.__cause__, RecursionError)
 
     def test_source_verification_failure_prevents_artifact_read(self) -> None:
         reference = self.make_reference(

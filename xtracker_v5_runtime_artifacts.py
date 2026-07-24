@@ -230,7 +230,12 @@ def _decode_strict_json_object(raw_bytes: bytes) -> Mapping[str, object]:
 
     if not isinstance(parsed, dict):
         raise RuntimeArtifactIntegrityError("JSON artifact top level must be an object")
-    frozen = _freeze_json(parsed)
+    try:
+        frozen = _freeze_json(parsed)
+    except RecursionError as exc:
+        raise RuntimeArtifactIntegrityError(
+            "JSON artifact exceeds immutable conversion depth"
+        ) from exc
     if not isinstance(frozen, Mapping):
         raise RuntimeArtifactIntegrityError("JSON artifact object could not be frozen")
     return frozen
