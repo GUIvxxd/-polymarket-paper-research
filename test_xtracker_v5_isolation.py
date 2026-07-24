@@ -6,13 +6,14 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import xtracker_v5_isolation as isolation
 
 
 SOURCE_ROOT = Path(__file__).resolve().parent
 FOUNDATION_SOURCE = Path("xtracker_v5_isolation.py")
-EXPECTED_FOUNDATION_SHA256 = "15a22b854242e8a6ac340cba8e9ea6e7c2f2780e429fafcb2e30bc01e9fe4329"
+EXPECTED_FOUNDATION_SHA256 = "0f6a8ba0d191874cce01694b0ed959e05389533cf289718eef93453fb9e0546c"
 
 
 class V5IsolationTests(unittest.TestCase):
@@ -140,6 +141,127 @@ class V5IsolationTests(unittest.TestCase):
         with self.assertRaisesRegex(isolation.RootIsolationError, "symlink"):
             isolation.read_verified_artifact(self.paths, reference)
         self.assertEqual(external.read_bytes(), b"external\n")
+
+    def test_root_replacement_after_bundle_validation_is_rejected(self) -> None:
+        data = b'{"condition_id":"condition-root-race"}\n'
+        relative_path = (
+            "reports/xtracker_forward_validation/v5/proofs/condition-root-race.json"
+        )
+        reference = isolation.ArtifactReference.from_bytes(
+            role="proof",
+            relative_path=relative_path,
+            data=data,
+            source_type="sanitized-test-fixture",
+        )
+        self.write_under_root(relative_path, data)
+        retired_root = self.sandbox_root / "retired-v5-root"
+        self.root.rename(retired_root)
+        self.root.mkdir()
+        self.write_under_root(relative_path, data)
+
+        with self.assertRaisesRegex(isolation.RootIsolationError, "identity changed"):
+            isolation.read_verified_artifact(self.paths, reference)
+
+        self.assertEqual(
+            retired_root.joinpath(*relative_path.split("/")).read_bytes(),
+            data,
+        )
+
+    def test_artifact_symlink_swap_during_descriptor_walk_is_rejected(self) -> None:
+        data = b'{"condition_id":"condition-artifact-race"}\n'
+        relative_path = (
+            "reports/xtracker_forward_validation/v5/proofs/"
+            "condition-artifact-race.json"
+        )
+        local = self.write_under_root(relative_path, data)
+        external = self.outside / "condition-artifact-race.json"
+        external.write_bytes(data)
+        reference = isolation.ArtifactReference.from_bytes(
+            role="proof",
+            relative_path=relative_path,
+            data=data,
+            source_type="sanitized-test-fixture",
+        )
+        original_open = isolation._open_child_fd
+        swapped = False
+
+        def racing_open(name: str, flags: int, *, dir_fd: int) -> int:
+            nonlocal swapped
+            if name == local.name and not swapped:
+                local.unlink()
+                local.symlink_to(external)
+                swapped = True
+            return original_open(name, flags, dir_fd=dir_fd)
+
+        with mock.patch.object(isolation, "_open_child_fd", side_effect=racing_open):
+            with self.assertRaisesRegex(
+                isolation.ArtifactIntegrityError,
+                "safe root-local descriptor",
+            ):
+                isolation.read_verified_artifact(self.paths, reference)
+
+        self.assertTrue(swapped)
+        self.assertEqual(external.read_bytes(), data)
+
+    def test_artifact_path_swap_after_open_reads_pinned_descriptor(self) -> None:
+        local_data = b'{"proof":"local"}\n'
+        external_data = b'{"proof":"other"}\n'
+        relative_path = "proofs/after-open-race.json"
+        local = self.write_under_root(relative_path, local_data)
+        external = self.outside / "after-open-race.json"
+        external.write_bytes(external_data)
+        reference = isolation.ArtifactReference.from_bytes(
+            role="proof",
+            relative_path=relative_path,
+            data=local_data,
+            source_type="sanitized-test-fixture",
+        )
+        original_read = isolation.os.read
+        swapped = False
+
+        def racing_read(fd: int, byte_count: int) -> bytes:
+            nonlocal swapped
+            if not swapped:
+                local.unlink()
+                local.symlink_to(external)
+                swapped = True
+            return original_read(fd, byte_count)
+
+        with mock.patch.object(isolation.os, "read", side_effect=racing_read):
+            self.assertEqual(
+                isolation.read_verified_artifact(self.paths, reference),
+                local_data,
+            )
+
+        self.assertTrue(swapped)
+        self.assertEqual(external.read_bytes(), external_data)
+
+    def test_source_symlink_swap_during_descriptor_walk_is_rejected(self) -> None:
+        data = b"VALUE = 1\n"
+        relative_path = "src/future_v5_component.py"
+        local = self.write_under_root(relative_path, data)
+        external = self.outside / "future_v5_component.py"
+        external.write_bytes(data)
+        original_open = isolation._open_child_fd
+        swapped = False
+
+        def racing_open(name: str, flags: int, *, dir_fd: int) -> int:
+            nonlocal swapped
+            if name == local.name and not swapped:
+                local.unlink()
+                local.symlink_to(external)
+                swapped = True
+            return original_open(name, flags, dir_fd=dir_fd)
+
+        with mock.patch.object(isolation, "_open_child_fd", side_effect=racing_open):
+            with self.assertRaisesRegex(
+                isolation.SourceIntegrityError,
+                "safe root-local descriptor",
+            ):
+                isolation.build_source_manifest(self.paths, [Path(relative_path)])
+
+        self.assertTrue(swapped)
+        self.assertEqual(external.read_bytes(), data)
 
     def test_source_manifest_hashes_exact_canonical_lf_bytes(self) -> None:
         source = self.write_under_root("src/future_v5_component.py", b"VALUE = 1\n")
