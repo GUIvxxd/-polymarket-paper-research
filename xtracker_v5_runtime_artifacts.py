@@ -12,6 +12,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from types import MappingProxyType
 from typing import Final, Iterable, Mapping
 
@@ -73,6 +74,25 @@ _CANONICAL_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _UTC_TIMESTAMP = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$"
 )
+
+
+class ArtifactOperationProfile(str, Enum):
+    """The complete approved artifact-operation profile identities."""
+
+    CAPTURE_IDENTITY = "CAPTURE_IDENTITY"
+    CAPTURE_FORECAST = "CAPTURE_FORECAST"
+    CAPTURE_DECISION_CONTEXT = "CAPTURE_DECISION_CONTEXT"
+    CAPTURE_EXECUTION_ATTEMPT = "CAPTURE_EXECUTION_ATTEMPT"
+    CAPTURE_PROVIDER_OUTCOME_UNIDENTIFIED = (
+        "CAPTURE_PROVIDER_OUTCOME_UNIDENTIFIED"
+    )
+    CAPTURE_PROVIDER_OUTCOME_IDENTIFIED = "CAPTURE_PROVIDER_OUTCOME_IDENTIFIED"
+    MONITOR_DUE_OPERATION = "MONITOR_DUE_OPERATION"
+    SETTLEMENT_DUE_OPERATION = "SETTLEMENT_DUE_OPERATION"
+    SETTLEMENT_FINAL_CORROBORATED = "SETTLEMENT_FINAL_CORROBORATED"
+    SETTLEMENT_FINAL_XTRACKER_UNAVAILABLE = (
+        "SETTLEMENT_FINAL_XTRACKER_UNAVAILABLE"
+    )
 
 
 class RuntimeArtifactContractError(ValueError):
@@ -158,6 +178,19 @@ _PHASE_ROLES: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
 )
 
 
+_PROVIDER_OUTCOME_PROFILE_PHASES: Final[
+    Mapping[ArtifactOperationProfile, str]
+] = MappingProxyType(
+    {
+        ArtifactOperationProfile.CAPTURE_PROVIDER_OUTCOME_UNIDENTIFIED: "capture",
+        ArtifactOperationProfile.CAPTURE_PROVIDER_OUTCOME_IDENTIFIED: "capture",
+        ArtifactOperationProfile.MONITOR_DUE_OPERATION: "monitor",
+        ArtifactOperationProfile.SETTLEMENT_DUE_OPERATION: "settlement",
+        ArtifactOperationProfile.SETTLEMENT_FINAL_XTRACKER_UNAVAILABLE: "settlement",
+    }
+)
+
+
 def artifact_path_prefix(phase: str, role: str) -> str:
     """Return the frozen root-relative prefix for a valid phase/role pair."""
 
@@ -220,6 +253,7 @@ class ArtifactEnvelope:
     canonical_relative_path: str
     byte_length: int
     content_sha256: str
+    operation_profile: ArtifactOperationProfile | None
     reason_code: str | None
 
 
@@ -459,9 +493,32 @@ def validate_artifact_envelope(
     )
     if envelope.reason_code is not None:
         _validate_canonical_identifier(envelope.reason_code, label="reason_code")
-    if envelope.artifact_role == "provider_outcome" and envelope.reason_code is None:
+    if envelope.artifact_role == "provider_outcome":
+        if envelope.reason_code is None:
+            raise RuntimeArtifactContractError(
+                "provider_outcome requires a deterministic reason_code"
+            )
+        if not isinstance(
+            envelope.operation_profile,
+            ArtifactOperationProfile,
+        ):
+            raise RuntimeArtifactContractError(
+                "provider_outcome requires an ArtifactOperationProfile binding"
+            )
+        operation_phase = _PROVIDER_OUTCOME_PROFILE_PHASES.get(
+            envelope.operation_profile
+        )
+        if operation_phase is None:
+            raise RuntimeArtifactContractError(
+                "provider_outcome operation profile does not accept that role"
+            )
+        if operation_phase != phase:
+            raise RuntimeArtifactContractError(
+                "provider_outcome operation profile does not match artifact phase"
+            )
+    elif envelope.operation_profile is not None:
         raise RuntimeArtifactContractError(
-            "provider_outcome requires a deterministic reason_code"
+            "operation_profile is reserved for provider_outcome evidence"
         )
 
     _validate_sha256(envelope.content_sha256, label="content_sha256")
@@ -636,6 +693,7 @@ class V5RuntimeArtifactGateway:
 __all__ = [
     "ARTIFACT_ENVELOPE_SCHEMA_ID",
     "ARTIFACT_ENVELOPE_SCHEMA_VERSION",
+    "ArtifactOperationProfile",
     "ArtifactEnvelope",
     "CAPTURE_DERIVED_PATH_PREFIX",
     "CAPTURE_PATH_PREFIX",

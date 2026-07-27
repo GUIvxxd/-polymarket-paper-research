@@ -95,6 +95,7 @@ class V5RuntimeArtifactConsumerTests(unittest.TestCase):
         source_manifest_sha256: str = _HASH_C,
         schema_id: str = runtime.ARTIFACT_ENVELOPE_SCHEMA_ID,
         schema_version: str = runtime.ARTIFACT_ENVELOPE_SCHEMA_VERSION,
+        operation_profile: object = _DEFAULT,
         reason_code: object = _DEFAULT,
     ) -> runtime.ArtifactEnvelope:
         provenance = runtime.ROLE_PROVENANCE[role]
@@ -113,6 +114,13 @@ class V5RuntimeArtifactConsumerTests(unittest.TestCase):
         )
         if write:
             self.write_under_root(relative_path, data)
+        default_provider_profiles = {
+            "capture": (
+                consumers.ArtifactOperationProfile.CAPTURE_PROVIDER_OUTCOME_IDENTIFIED
+            ),
+            "monitor": consumers.ArtifactOperationProfile.MONITOR_DUE_OPERATION,
+            "settlement": consumers.ArtifactOperationProfile.SETTLEMENT_DUE_OPERATION,
+        }
         return runtime.ArtifactEnvelope(
             reference=reference,
             schema_id=schema_id,
@@ -136,6 +144,11 @@ class V5RuntimeArtifactConsumerTests(unittest.TestCase):
             canonical_relative_path=relative_path,
             byte_length=len(data),
             content_sha256=digest,
+            operation_profile=(
+                default_provider_profiles[phase]
+                if operation_profile is _DEFAULT and role == "provider_outcome"
+                else None if operation_profile is _DEFAULT else operation_profile
+            ),  # type: ignore[arg-type]
             reason_code=(
                 "available"
                 if reason_code is _DEFAULT and role == "provider_outcome"
@@ -167,6 +180,9 @@ class V5RuntimeArtifactConsumerTests(unittest.TestCase):
                         and role == "provider_outcome"
                     )
                     else _DEFAULT
+                ),
+                operation_profile=(
+                    profile if role == "provider_outcome" else _DEFAULT
                 ),
             )
             for role in sorted(contract.roles)
@@ -465,6 +481,7 @@ class V5RuntimeArtifactConsumerTests(unittest.TestCase):
             if envelope.artifact_role == "provider_outcome"
         )
         self.assertEqual(provider_outcome.reason_code, "unavailable")
+        self.assertIs(provider_outcome.operation_profile, profile)
         result = self.consume(profile, envelopes)
         self.assertEqual({item.reference.role for item in result}, roles)
 
@@ -494,6 +511,50 @@ class V5RuntimeArtifactConsumerTests(unittest.TestCase):
                 "reason_code='unavailable'",
             ):
                 self.consume(profile, wrong_envelopes)
+            reader.assert_not_called()
+
+    def test_provider_outcome_operation_profile_must_match_before_io(self) -> None:
+        profile = (
+            consumers.ArtifactOperationProfile.SETTLEMENT_FINAL_XTRACKER_UNAVAILABLE
+        )
+        envelopes = self.profile_envelopes(profile)
+        provider_index = next(
+            index
+            for index, envelope in enumerate(envelopes)
+            if envelope.artifact_role == "provider_outcome"
+        )
+        provider_outcome = envelopes[provider_index]
+        wrong_bindings = (
+            None,
+            "SETTLEMENT_FINAL_XTRACKER_UNAVAILABLE",
+            consumers.ArtifactOperationProfile.CAPTURE_PROVIDER_OUTCOME_UNIDENTIFIED,
+            consumers.ArtifactOperationProfile.CAPTURE_PROVIDER_OUTCOME_IDENTIFIED,
+            consumers.ArtifactOperationProfile.MONITOR_DUE_OPERATION,
+            consumers.ArtifactOperationProfile.SETTLEMENT_DUE_OPERATION,
+            consumers.ArtifactOperationProfile.CAPTURE_FORECAST,
+        )
+
+        with (
+            mock.patch.object(runtime, "verify_source_manifest") as verifier,
+            mock.patch.object(runtime, "read_verified_artifact") as reader,
+        ):
+            for binding in wrong_bindings:
+                with self.subTest(operation_profile=binding):
+                    wrong_outcome = dataclasses.replace(
+                        provider_outcome,
+                        operation_profile=binding,
+                        reason_code="unavailable",
+                    )
+                    mixed = list(envelopes)
+                    mixed[provider_index] = wrong_outcome
+                    with self.assertRaises(
+                        (
+                            runtime.RuntimeArtifactContractError,
+                            consumers.RuntimeConsumerContractError,
+                        )
+                    ):
+                        self.consume(profile, tuple(mixed))
+            verifier.assert_not_called()
             reader.assert_not_called()
 
     def test_shared_protocol_lock_manifest_enrollment_and_market_mixing_fails(

@@ -10,12 +10,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from enum import Enum
 from types import MappingProxyType
 from typing import Final, Mapping
 
 from xtracker_v5_isolation import SourceDigest, V5PathBundle
 from xtracker_v5_runtime_artifacts import (
+    ArtifactOperationProfile,
     ArtifactEnvelope,
     V5RuntimeArtifactGateway,
     VerifiedJSONArtifact,
@@ -25,25 +25,6 @@ from xtracker_v5_runtime_artifacts import (
 
 class RuntimeConsumerContractError(ValueError):
     """A requested artifact batch violates the frozen V5 consumer contract."""
-
-
-class ArtifactOperationProfile(str, Enum):
-    """The complete approved artifact-operation profiles."""
-
-    CAPTURE_IDENTITY = "CAPTURE_IDENTITY"
-    CAPTURE_FORECAST = "CAPTURE_FORECAST"
-    CAPTURE_DECISION_CONTEXT = "CAPTURE_DECISION_CONTEXT"
-    CAPTURE_EXECUTION_ATTEMPT = "CAPTURE_EXECUTION_ATTEMPT"
-    CAPTURE_PROVIDER_OUTCOME_UNIDENTIFIED = (
-        "CAPTURE_PROVIDER_OUTCOME_UNIDENTIFIED"
-    )
-    CAPTURE_PROVIDER_OUTCOME_IDENTIFIED = "CAPTURE_PROVIDER_OUTCOME_IDENTIFIED"
-    MONITOR_DUE_OPERATION = "MONITOR_DUE_OPERATION"
-    SETTLEMENT_DUE_OPERATION = "SETTLEMENT_DUE_OPERATION"
-    SETTLEMENT_FINAL_CORROBORATED = "SETTLEMENT_FINAL_CORROBORATED"
-    SETTLEMENT_FINAL_XTRACKER_UNAVAILABLE = (
-        "SETTLEMENT_FINAL_XTRACKER_UNAVAILABLE"
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,6 +212,7 @@ def _validate_profile_membership(
 
 def _validate_shared_envelope_identity(
     envelopes: tuple[ArtifactEnvelope, ...],
+    profile: ArtifactOperationProfile,
     contract: OperationProfileContract,
 ) -> None:
     first = envelopes[0]
@@ -264,6 +246,15 @@ def _validate_shared_envelope_identity(
         raise RuntimeConsumerContractError(
             "unidentified provider outcome cannot claim market identity"
         )
+
+    for envelope in envelopes:
+        if (
+            envelope.artifact_role == "provider_outcome"
+            and envelope.operation_profile is not profile
+        ):
+            raise RuntimeConsumerContractError(
+                "provider_outcome operation profile does not match selected profile"
+            )
 
     if contract.required_provider_reason_code is not None:
         provider_outcome = next(
@@ -389,7 +380,11 @@ class V5RuntimeArtifactConsumer:
         _validate_profile_membership(checked_envelopes, contract)
         for envelope in checked_envelopes:
             validate_artifact_envelope(phase, envelope)
-        _validate_shared_envelope_identity(checked_envelopes, contract)
+        _validate_shared_envelope_identity(
+            checked_envelopes,
+            profile,
+            contract,
+        )
 
         preserved_manifest = _materialize_source_manifest(source_manifest)
         preserved_expected_paths = _materialize_expected_source_paths(

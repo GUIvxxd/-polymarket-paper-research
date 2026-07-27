@@ -97,6 +97,7 @@ class V5RuntimeArtifactGatewayTests(unittest.TestCase):
         source_manifest_sha256: str = _HASH_C,
         enrollment: object = _DEFAULT,
         market_identity: object = _DEFAULT,
+        operation_profile: object = _DEFAULT,
         reason_code: object = _DEFAULT,
     ) -> runtime.ArtifactEnvelope:
         provenance = runtime.ROLE_PROVENANCE.get(role)
@@ -127,6 +128,18 @@ class V5RuntimeArtifactGatewayTests(unittest.TestCase):
             if reason_code is _DEFAULT and role == "provider_outcome"
             else None if reason_code is _DEFAULT else reason_code
         )
+        default_provider_profiles = {
+            "capture": (
+                runtime.ArtifactOperationProfile.CAPTURE_PROVIDER_OUTCOME_IDENTIFIED
+            ),
+            "monitor": runtime.ArtifactOperationProfile.MONITOR_DUE_OPERATION,
+            "settlement": runtime.ArtifactOperationProfile.SETTLEMENT_DUE_OPERATION,
+        }
+        selected_operation_profile = (
+            default_provider_profiles[phase]
+            if operation_profile is _DEFAULT and role == "provider_outcome"
+            else None if operation_profile is _DEFAULT else operation_profile
+        )
         return runtime.ArtifactEnvelope(
             reference=reference,
             schema_id=schema_id,
@@ -152,6 +165,7 @@ class V5RuntimeArtifactGatewayTests(unittest.TestCase):
             canonical_relative_path=relative_path,
             byte_length=len(data),
             content_sha256=digest,
+            operation_profile=selected_operation_profile,  # type: ignore[arg-type]
             reason_code=selected_reason,  # type: ignore[arg-type]
         )
 
@@ -496,6 +510,56 @@ class V5RuntimeArtifactGatewayTests(unittest.TestCase):
             with self.subTest(candidate=candidate):
                 with self.assertRaises(runtime.RuntimeArtifactContractError):
                     runtime.validate_artifact_envelope("capture", candidate)
+
+    def test_provider_outcome_operation_binding_fails_before_io(self) -> None:
+        valid = self.make_envelope(
+            phase="monitor",
+            role="provider_outcome",
+            data=b'{"status":"unavailable"}\n',
+            reason_code="unavailable",
+        )
+        invalid = (
+            dataclasses.replace(valid, operation_profile=None),
+            dataclasses.replace(valid, operation_profile="MONITOR_DUE_OPERATION"),
+            dataclasses.replace(
+                valid,
+                operation_profile=runtime.ArtifactOperationProfile.CAPTURE_FORECAST,
+            ),
+            dataclasses.replace(
+                valid,
+                operation_profile=(
+                    runtime.ArtifactOperationProfile.SETTLEMENT_DUE_OPERATION
+                ),
+            ),
+        )
+        non_provider = self.make_envelope(
+            phase="monitor",
+            role="position_snapshot",
+            data=b'{"position":{}}\n',
+        )
+        invalid += (
+            dataclasses.replace(
+                non_provider,
+                operation_profile=(
+                    runtime.ArtifactOperationProfile.MONITOR_DUE_OPERATION
+                ),
+            ),
+        )
+
+        with (
+            mock.patch.object(runtime, "verify_source_manifest") as verifier,
+            mock.patch.object(runtime, "read_verified_artifact") as reader,
+        ):
+            for candidate in invalid:
+                with self.subTest(operation_profile=candidate.operation_profile):
+                    with self.assertRaises(runtime.RuntimeArtifactContractError):
+                        self.gateway.read_monitor_json(
+                            candidate,
+                            self.source_manifest,
+                            self.expected_sources,
+                        )
+            verifier.assert_not_called()
+            reader.assert_not_called()
 
     def test_phase_role_and_content_addressed_path_fail_before_io(self) -> None:
         data = b'{"paper":true}\n'
