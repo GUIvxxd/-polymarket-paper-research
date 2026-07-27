@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Source-verified, paper-only JSON artifact gateway for future X v5 consumers.
+"""Source-verified, paper-only JSON artifact gateway for X v5 consumers.
 
-This module is an integrity boundary only.  It provides no network, wallet,
+This module is an integrity boundary only. It provides no network, wallet,
 authentication, order, transaction-submission, scheduler, or write capability.
 Every read is rooted in a caller-supplied :class:`V5PathBundle`.
 """
@@ -11,6 +11,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from types import MappingProxyType
 from typing import Final, Iterable, Mapping
 
@@ -24,10 +25,23 @@ from xtracker_v5_isolation import (
 )
 
 
+RAW_EXTERNAL_ARTIFACT: Final = "raw_external_artifact"
+DERIVED_LOCAL_RECORD: Final = "derived_local_record"
+ARTIFACT_ENVELOPE_SCHEMA_ID: Final = "xtracker_v5_artifact_envelope"
+ARTIFACT_ENVELOPE_SCHEMA_VERSION: Final = "1"
+
 CAPTURE_PATH_PREFIX: Final = "reports/xtracker_forward_validation/v5/raw/capture/"
-MONITOR_PATH_PREFIX: Final = "reports/xtracker_forward_validation/v5/raw/monitor/"
+CAPTURE_DERIVED_PATH_PREFIX: Final = (
+    "reports/xtracker_forward_validation/v5/derived/capture/"
+)
+MONITOR_DERIVED_PATH_PREFIX: Final = (
+    "reports/xtracker_forward_validation/v5/derived/monitor/"
+)
 SETTLEMENT_PATH_PREFIX: Final = (
     "reports/xtracker_forward_validation/v5/settlement_proofs/"
+)
+SETTLEMENT_DERIVED_PATH_PREFIX: Final = (
+    "reports/xtracker_forward_validation/v5/derived/settlement/"
 )
 
 CAPTURE_ROLES: Final = frozenset(
@@ -37,9 +51,10 @@ CAPTURE_ROLES: Final = frozenset(
         "post_latency_book",
         "fee_metadata",
         "market_identity",
+        "provider_outcome",
     }
 )
-MONITOR_ROLES: Final = frozenset({"monitor_book", "position_snapshot"})
+MONITOR_ROLES: Final = frozenset({"position_snapshot", "provider_outcome"})
 SETTLEMENT_ROLES: Final = frozenset(
     {
         "finalized_block",
@@ -48,26 +63,20 @@ SETTLEMENT_ROLES: Final = frozenset(
         "condition_resolution_log",
         "payout_state",
         "source_count",
+        "position_snapshot",
+        "provider_outcome",
     }
 )
 
-# These labels describe read-only public provenance.  They do not implement or
-# authorize fetching.  Settlement evidence is deliberately limited to public
-# chain RPC provenance; capture and monitor evidence may originate only from
-# the named public read APIs/records.
-CAPTURE_SOURCE_TYPES: Final = frozenset(
-    {"public_clob_rest", "public_gamma_rest", "public_x_record"}
-)
-MONITOR_SOURCE_TYPES: Final = frozenset(
-    {"public_clob_rest", "public_gamma_rest"}
-)
-SETTLEMENT_SOURCE_TYPES: Final = frozenset({"public_polygon_rpc"})
-
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _CANONICAL_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_UTC_TIMESTAMP = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$"
+)
 
 
 class RuntimeArtifactContractError(ValueError):
-    """The requested phase, role, path, or provenance violates the gateway API."""
+    """The requested phase, role, envelope, or provenance violates the API."""
 
 
 class RuntimeArtifactIntegrityError(ArtifactIntegrityError):
@@ -75,49 +84,265 @@ class RuntimeArtifactIntegrityError(ArtifactIntegrityError):
 
 
 @dataclass(frozen=True, slots=True)
-class _PhasePolicy:
-    prefix: str
-    roles: frozenset[str]
-    source_types: frozenset[str]
+class RoleProvenance:
+    """Frozen evidence class and sole accepted source for one logical role."""
+
+    evidence_class: str
+    source_type: str
 
 
-_PHASE_POLICIES: Final[Mapping[str, _PhasePolicy]] = MappingProxyType(
+ROLE_PROVENANCE: Final[Mapping[str, RoleProvenance]] = MappingProxyType(
     {
-        "capture": _PhasePolicy(
-            CAPTURE_PATH_PREFIX,
-            CAPTURE_ROLES,
-            CAPTURE_SOURCE_TYPES,
+        "forecast_input": RoleProvenance(
+            RAW_EXTERNAL_ARTIFACT,
+            "public_x_record",
         ),
-        "monitor": _PhasePolicy(
-            MONITOR_PATH_PREFIX,
-            MONITOR_ROLES,
-            MONITOR_SOURCE_TYPES,
+        "market_identity": RoleProvenance(
+            RAW_EXTERNAL_ARTIFACT,
+            "public_gamma_rest",
         ),
-        "settlement": _PhasePolicy(
-            SETTLEMENT_PATH_PREFIX,
-            SETTLEMENT_ROLES,
-            SETTLEMENT_SOURCE_TYPES,
+        "decision_book": RoleProvenance(
+            RAW_EXTERNAL_ARTIFACT,
+            "public_clob_rest",
+        ),
+        "post_latency_book": RoleProvenance(
+            RAW_EXTERNAL_ARTIFACT,
+            "public_clob_rest",
+        ),
+        "fee_metadata": RoleProvenance(
+            RAW_EXTERNAL_ARTIFACT,
+            "public_clob_rest",
+        ),
+        "position_snapshot": RoleProvenance(
+            DERIVED_LOCAL_RECORD,
+            "derived_v5_lifecycle",
+        ),
+        "provider_outcome": RoleProvenance(
+            DERIVED_LOCAL_RECORD,
+            "derived_v5_provider_outcome",
+        ),
+        "finalized_block": RoleProvenance(
+            RAW_EXTERNAL_ARTIFACT,
+            "public_polygon_rpc",
+        ),
+        "resolution_transaction": RoleProvenance(
+            RAW_EXTERNAL_ARTIFACT,
+            "public_polygon_rpc",
+        ),
+        "resolution_receipt": RoleProvenance(
+            RAW_EXTERNAL_ARTIFACT,
+            "public_polygon_rpc",
+        ),
+        "condition_resolution_log": RoleProvenance(
+            RAW_EXTERNAL_ARTIFACT,
+            "public_polygon_rpc",
+        ),
+        "payout_state": RoleProvenance(
+            RAW_EXTERNAL_ARTIFACT,
+            "public_polygon_rpc",
+        ),
+        "source_count": RoleProvenance(
+            RAW_EXTERNAL_ARTIFACT,
+            "public_x_record",
         ),
     }
 )
 
 
+_PHASE_ROLES: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
+    {
+        "capture": CAPTURE_ROLES,
+        "monitor": MONITOR_ROLES,
+        "settlement": SETTLEMENT_ROLES,
+    }
+)
+
+
+def artifact_path_prefix(phase: str, role: str) -> str:
+    """Return the frozen root-relative prefix for a valid phase/role pair."""
+
+    if phase not in _PHASE_ROLES or role not in _PHASE_ROLES[phase]:
+        raise RuntimeArtifactContractError(
+            f"artifact role is not allowed for {phase}: {role!r}"
+        )
+    if phase == "capture":
+        if role == "provider_outcome":
+            return CAPTURE_DERIVED_PATH_PREFIX
+        return CAPTURE_PATH_PREFIX
+    if phase == "monitor":
+        return MONITOR_DERIVED_PATH_PREFIX
+    if role in {"position_snapshot", "provider_outcome"}:
+        return SETTLEMENT_DERIVED_PATH_PREFIX
+    return SETTLEMENT_PATH_PREFIX
+
+
+@dataclass(frozen=True, slots=True)
+class EnrollmentWindowIdentity:
+    """Immutable enrollment and forecast-window identity."""
+
+    platform: str
+    normalized_handle: str
+    xtracker_tracking_id: str
+    window_start_utc: str
+    window_end_utc: str
+    gamma_event_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class MarketOutcomeIdentity:
+    """Exact market, condition, token, and outcome identity without normalization."""
+
+    gamma_market_id: str
+    condition_id: str
+    token_id: str
+    outcome: str
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactEnvelope:
+    """Immutable metadata bound one-to-one to an exact ArtifactReference."""
+
+    reference: ArtifactReference
+    schema_id: str
+    schema_version: str
+    artifact_role: str
+    evidence_class: str
+    protocol_id: str
+    protocol_sha256: str
+    complete_lock_sha256: str
+    source_manifest_sha256: str
+    source_type: str
+    enrollment: EnrollmentWindowIdentity
+    market_identity: MarketOutcomeIdentity | None
+    request_started_at_utc: str | None
+    response_received_at_utc: str | None
+    semantic_observed_at_utc: str | None
+    canonical_relative_path: str
+    byte_length: int
+    content_sha256: str
+    reason_code: str | None
+
+
 @dataclass(frozen=True, slots=True)
 class VerifiedJSONArtifact:
-    """Immutable result retaining identity, exact bytes, digest, and JSON object."""
+    """Immutable result retaining envelope, identity, exact bytes, and JSON."""
 
     phase: str
+    envelope: ArtifactEnvelope
     reference: ArtifactReference
     raw_bytes: bytes
     sha256: str
     parsed_object: Mapping[str, object]
 
 
+def _validate_canonical_identifier(value: object, *, label: str) -> str:
+    if type(value) is not str or _CANONICAL_SEGMENT.fullmatch(value) is None:
+        raise RuntimeArtifactContractError(
+            f"{label} must be a non-empty canonical string"
+        )
+    return value
+
+
+def _validate_exact_identity_text(value: object, *, label: str) -> str:
+    if (
+        type(value) is not str
+        or not value
+        or value != value.strip()
+        or any(ord(character) < 32 for character in value)
+    ):
+        raise RuntimeArtifactContractError(
+            f"{label} must be an exact non-empty identity string"
+        )
+    return value
+
+
+def _validate_sha256(value: object, *, label: str) -> str:
+    if type(value) is not str or _SHA256_PATTERN.fullmatch(value) is None:
+        raise RuntimeArtifactContractError(
+            f"{label} must be 64 lowercase hexadecimal characters"
+        )
+    return value
+
+
+def _validate_utc_timestamp(
+    value: object,
+    *,
+    label: str,
+    optional: bool,
+) -> str | None:
+    if value is None and optional:
+        return None
+    if type(value) is not str or _UTC_TIMESTAMP.fullmatch(value) is None:
+        raise RuntimeArtifactContractError(
+            f"{label} must be a canonical UTC timestamp ending in Z"
+        )
+    try:
+        datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as exc:
+        raise RuntimeArtifactContractError(
+            f"{label} must be a valid UTC timestamp"
+        ) from exc
+    return value
+
+
+def _validate_enrollment_identity(
+    identity: object,
+) -> EnrollmentWindowIdentity:
+    if not isinstance(identity, EnrollmentWindowIdentity):
+        raise RuntimeArtifactContractError(
+            "enrollment must be an EnrollmentWindowIdentity"
+        )
+    _validate_canonical_identifier(identity.platform, label="platform")
+    _validate_canonical_identifier(
+        identity.normalized_handle,
+        label="normalized_handle",
+    )
+    _validate_canonical_identifier(
+        identity.xtracker_tracking_id,
+        label="xtracker_tracking_id",
+    )
+    _validate_utc_timestamp(
+        identity.window_start_utc,
+        label="window_start_utc",
+        optional=False,
+    )
+    _validate_utc_timestamp(
+        identity.window_end_utc,
+        label="window_end_utc",
+        optional=False,
+    )
+    _validate_canonical_identifier(
+        identity.gamma_event_id,
+        label="gamma_event_id",
+    )
+    return identity
+
+
+def _validate_market_identity(
+    identity: object,
+) -> MarketOutcomeIdentity | None:
+    if identity is None:
+        return None
+    if not isinstance(identity, MarketOutcomeIdentity):
+        raise RuntimeArtifactContractError(
+            "market_identity must be a MarketOutcomeIdentity or None"
+        )
+    _validate_exact_identity_text(
+        identity.gamma_market_id,
+        label="gamma_market_id",
+    )
+    _validate_exact_identity_text(identity.condition_id, label="condition_id")
+    _validate_exact_identity_text(identity.token_id, label="token_id")
+    _validate_exact_identity_text(identity.outcome, label="outcome")
+    return identity
+
+
 def _validate_canonical_phase_path(
     relative_path: object,
     *,
     phase: str,
-    prefix: str,
+    role: str,
+    content_sha256: str,
 ) -> str:
     if type(relative_path) is not str:
         raise RuntimeArtifactContractError("artifact path must be an explicit string")
@@ -138,40 +363,129 @@ def _validate_canonical_phase_path(
         raise RuntimeArtifactContractError(
             "artifact path is not canonical root-relative POSIX"
         )
+
+    prefix = artifact_path_prefix(phase, role)
     if not relative_path.startswith(prefix):
         raise RuntimeArtifactContractError(
-            f"artifact path is outside the canonical {phase} prefix"
+            f"artifact path is outside the canonical {phase}/{role} prefix"
         )
-
-    phase_local_path = relative_path[len(prefix) :]
-    if not phase_local_path or not phase_local_path.endswith(".json"):
+    local_path = relative_path[len(prefix) :]
+    if not local_path or parts[-1] != f"{content_sha256}.json":
         raise RuntimeArtifactContractError(
-            f"{phase} artifact path must name a JSON file below its phase prefix"
+            "artifact path must use the verified content SHA-256 as its filename"
         )
     return relative_path
 
 
-def _validate_reference(phase: str, reference: object) -> ArtifactReference:
-    if not isinstance(reference, ArtifactReference):
+def validate_artifact_envelope(
+    phase: str,
+    envelope: object,
+) -> ArtifactReference:
+    """Validate the complete no-I/O envelope contract for one phase."""
+
+    if phase not in _PHASE_ROLES:
+        raise RuntimeArtifactContractError(f"unknown artifact phase: {phase!r}")
+    if not isinstance(envelope, ArtifactEnvelope):
         raise RuntimeArtifactContractError(
-            "runtime artifact reference must be an ArtifactReference"
+            "runtime artifact input must be an ArtifactEnvelope"
         )
-    policy = _PHASE_POLICIES[phase]
-    if type(reference.role) is not str or reference.role not in policy.roles:
+    if not isinstance(envelope.reference, ArtifactReference):
         raise RuntimeArtifactContractError(
-            f"artifact role is not allowed for {phase}: {reference.role!r}"
+            "artifact envelope must bind an ArtifactReference"
         )
-    if type(reference.source_type) is not str or not reference.source_type:
-        raise RuntimeArtifactContractError("artifact source_type must be explicit")
-    if reference.source_type not in policy.source_types:
+    if envelope.schema_id != ARTIFACT_ENVELOPE_SCHEMA_ID:
+        raise RuntimeArtifactContractError("unknown artifact envelope schema_id")
+    if envelope.schema_version != ARTIFACT_ENVELOPE_SCHEMA_VERSION:
+        raise RuntimeArtifactContractError("unknown artifact envelope schema_version")
+
+    reference = envelope.reference
+    if type(envelope.artifact_role) is not str:
+        raise RuntimeArtifactContractError("artifact_role must be an explicit string")
+    if envelope.artifact_role != reference.role:
         raise RuntimeArtifactContractError(
-            f"artifact source_type is not allowed for {phase}: "
-            f"{reference.source_type!r}"
+            "envelope artifact_role does not match its ArtifactReference"
+        )
+    if envelope.artifact_role not in _PHASE_ROLES[phase]:
+        raise RuntimeArtifactContractError(
+            f"artifact role is not allowed for {phase}: {envelope.artifact_role!r}"
+        )
+
+    provenance = ROLE_PROVENANCE.get(envelope.artifact_role)
+    if provenance is None:
+        raise RuntimeArtifactContractError(
+            f"artifact role has no frozen provenance: {envelope.artifact_role!r}"
+        )
+    if envelope.evidence_class != provenance.evidence_class:
+        raise RuntimeArtifactContractError(
+            f"artifact evidence_class is not allowed for "
+            f"{envelope.artifact_role}: {envelope.evidence_class!r}"
+        )
+    if envelope.source_type != provenance.source_type:
+        raise RuntimeArtifactContractError(
+            f"artifact source_type is not allowed for "
+            f"{envelope.artifact_role}: {envelope.source_type!r}"
+        )
+    if envelope.source_type != reference.source_type:
+        raise RuntimeArtifactContractError(
+            "envelope source_type does not match its ArtifactReference"
+        )
+
+    _validate_canonical_identifier(envelope.protocol_id, label="protocol_id")
+    _validate_sha256(envelope.protocol_sha256, label="protocol_sha256")
+    _validate_sha256(
+        envelope.complete_lock_sha256,
+        label="complete_lock_sha256",
+    )
+    _validate_sha256(
+        envelope.source_manifest_sha256,
+        label="source_manifest_sha256",
+    )
+    _validate_enrollment_identity(envelope.enrollment)
+    _validate_market_identity(envelope.market_identity)
+    _validate_utc_timestamp(
+        envelope.request_started_at_utc,
+        label="request_started_at_utc",
+        optional=True,
+    )
+    _validate_utc_timestamp(
+        envelope.response_received_at_utc,
+        label="response_received_at_utc",
+        optional=True,
+    )
+    _validate_utc_timestamp(
+        envelope.semantic_observed_at_utc,
+        label="semantic_observed_at_utc",
+        optional=True,
+    )
+    if envelope.reason_code is not None:
+        _validate_canonical_identifier(envelope.reason_code, label="reason_code")
+    if envelope.artifact_role == "provider_outcome" and envelope.reason_code is None:
+        raise RuntimeArtifactContractError(
+            "provider_outcome requires a deterministic reason_code"
+        )
+
+    _validate_sha256(envelope.content_sha256, label="content_sha256")
+    if type(envelope.byte_length) is not int or envelope.byte_length < 0:
+        raise RuntimeArtifactContractError(
+            "byte_length must be a nonnegative integer"
+        )
+    if envelope.canonical_relative_path != reference.relative_path:
+        raise RuntimeArtifactContractError(
+            "envelope path does not match its ArtifactReference"
+        )
+    if envelope.byte_length != reference.byte_length:
+        raise RuntimeArtifactContractError(
+            "envelope byte length does not match its ArtifactReference"
+        )
+    if envelope.content_sha256 != reference.sha256:
+        raise RuntimeArtifactContractError(
+            "envelope content SHA-256 does not match its ArtifactReference"
         )
     _validate_canonical_phase_path(
-        reference.relative_path,
+        envelope.canonical_relative_path,
         phase=phase,
-        prefix=policy.prefix,
+        role=envelope.artifact_role,
+        content_sha256=envelope.content_sha256,
     )
     return reference
 
@@ -255,39 +569,39 @@ class V5RuntimeArtifactGateway:
 
     def read_capture_json(
         self,
-        reference: ArtifactReference,
+        envelope: ArtifactEnvelope,
         source_manifest: Iterable[SourceDigest],
         expected_source_paths: Iterable[str],
     ) -> VerifiedJSONArtifact:
         return self._read_phase_json(
             "capture",
-            reference,
+            envelope,
             source_manifest,
             expected_source_paths,
         )
 
     def read_monitor_json(
         self,
-        reference: ArtifactReference,
+        envelope: ArtifactEnvelope,
         source_manifest: Iterable[SourceDigest],
         expected_source_paths: Iterable[str],
     ) -> VerifiedJSONArtifact:
         return self._read_phase_json(
             "monitor",
-            reference,
+            envelope,
             source_manifest,
             expected_source_paths,
         )
 
     def read_settlement_json(
         self,
-        reference: ArtifactReference,
+        envelope: ArtifactEnvelope,
         source_manifest: Iterable[SourceDigest],
         expected_source_paths: Iterable[str],
     ) -> VerifiedJSONArtifact:
         return self._read_phase_json(
             "settlement",
-            reference,
+            envelope,
             source_manifest,
             expected_source_paths,
         )
@@ -295,25 +609,23 @@ class V5RuntimeArtifactGateway:
     def _read_phase_json(
         self,
         phase: str,
-        reference: ArtifactReference,
+        envelope: ArtifactEnvelope,
         source_manifest: Iterable[SourceDigest],
         expected_source_paths: Iterable[str],
     ) -> VerifiedJSONArtifact:
-        checked_reference = _validate_reference(phase, reference)
+        checked_reference = validate_artifact_envelope(phase, envelope)
 
-        # Membership is supplied independently from the duplicate-preserving
-        # manifest.  Never infer the expected set from manifest entries.
         verify_source_manifest(
             self.paths,
             source_manifest,
             expected_source_paths,
         )
 
-        # This accepted primitive is the sole artifact byte-read boundary.
         raw_bytes = read_verified_artifact(self.paths, checked_reference)
         parsed_object = _decode_strict_json_object(raw_bytes)
         return VerifiedJSONArtifact(
             phase=phase,
+            envelope=envelope,
             reference=checked_reference,
             raw_bytes=raw_bytes,
             sha256=checked_reference.sha256,
@@ -322,17 +634,27 @@ class V5RuntimeArtifactGateway:
 
 
 __all__ = [
+    "ARTIFACT_ENVELOPE_SCHEMA_ID",
+    "ARTIFACT_ENVELOPE_SCHEMA_VERSION",
+    "ArtifactEnvelope",
+    "CAPTURE_DERIVED_PATH_PREFIX",
     "CAPTURE_PATH_PREFIX",
     "CAPTURE_ROLES",
-    "CAPTURE_SOURCE_TYPES",
-    "MONITOR_PATH_PREFIX",
+    "DERIVED_LOCAL_RECORD",
+    "EnrollmentWindowIdentity",
+    "MONITOR_DERIVED_PATH_PREFIX",
     "MONITOR_ROLES",
-    "MONITOR_SOURCE_TYPES",
+    "MarketOutcomeIdentity",
+    "RAW_EXTERNAL_ARTIFACT",
+    "ROLE_PROVENANCE",
+    "RoleProvenance",
     "RuntimeArtifactContractError",
     "RuntimeArtifactIntegrityError",
+    "SETTLEMENT_DERIVED_PATH_PREFIX",
     "SETTLEMENT_PATH_PREFIX",
     "SETTLEMENT_ROLES",
-    "SETTLEMENT_SOURCE_TYPES",
     "V5RuntimeArtifactGateway",
     "VerifiedJSONArtifact",
+    "artifact_path_prefix",
+    "validate_artifact_envelope",
 ]
